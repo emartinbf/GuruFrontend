@@ -2,10 +2,17 @@ import streamlit as st
 import requests
 from datetime import datetime, time
 from urllib.parse import quote
+import os
 
 st.set_page_config(page_title="Galicia Guru", page_icon=":robot:", layout="wide")
 
-API_URL = "https://localhost:44321/api"
+# Obtener API_URL según el ambiente
+try:
+    # En Streamlit Cloud, usar el secret configurado
+    API_URL = st.secrets["api_url"]
+except (FileNotFoundError, KeyError):
+    # En local, usar la URL de localhost
+    API_URL = os.getenv("API_URL", "https://localhost:44321/api")
 
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
