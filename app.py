@@ -6,13 +6,21 @@ import os
 
 st.set_page_config(page_title="Galicia Guru", page_icon=":robot:", layout="wide")
 
-# Obtener API_URL según el ambiente
-try:
-    # En Streamlit Cloud, usar el secret configurado
-    API_URL = st.secrets["api_url"]
-except (FileNotFoundError, KeyError):
-    # En local, usar la URL de localhost
-    API_URL = os.getenv("API_URL", "https://localhost:44321/api")
+LOCAL_API_URL = "https://localhost:44321/api"
+CLOUD_API_URL_DEFAULT = "https://poc-guru-hdf0gvb2a2f4ehgf.eastus-01.azurewebsites.net/api"
+
+
+def is_streamlit_cloud() -> bool:
+    # Streamlit Community Cloud sets this marker.
+    return os.getenv("STREAMLIT_SHARING_MODE", "").lower() == "community"
+
+
+if is_streamlit_cloud():
+    RUNTIME_ENV = "Cloud"
+    API_URL = st.secrets.get("api_url") or os.getenv("API_URL") or CLOUD_API_URL_DEFAULT
+else:
+    RUNTIME_ENV = "Local"
+    API_URL = LOCAL_API_URL
 
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -1616,6 +1624,7 @@ with tab5:
 
 with st.sidebar:
     st.header("Configuracion")
+    st.caption(f"Entorno: {RUNTIME_ENV}")
     st.caption(f"API: {API_URL}")
 
     if "config_summary" not in st.session_state:
