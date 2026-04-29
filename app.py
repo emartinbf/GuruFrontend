@@ -2474,13 +2474,38 @@ with tab6:
                         key=f"qa_decision_{global_idx}",
                     )
 
+                    corrected_question_text = ""
+                    answer_resolution_mode = "Usar respuesta existente"
                     selected_correct = ""
+                    new_answer_text = ""
+
                     if qa_decision == "incorrecto":
-                        selected_correct = st.selectbox(
-                            "Seleccionar respuesta correcta",
-                            [""] + list(correct_options.keys()),
-                            key=f"qa_correct_{global_idx}",
+                        corrected_question_text = st.text_area(
+                            "Texto corregido de la pregunta",
+                            value=candidate.get("query") or "",
+                            key=f"qa_corrected_question_{global_idx}",
+                            help="Se envía como CorrectedQuestionText cuando la revisión es incorrecta.",
                         )
+
+                        answer_resolution_mode = st.radio(
+                            "Respuesta correcta",
+                            ["Usar respuesta existente", "Crear nueva respuesta"],
+                            horizontal=True,
+                            key=f"qa_answer_mode_{global_idx}",
+                        )
+
+                        if answer_resolution_mode == "Usar respuesta existente":
+                            selected_correct = st.selectbox(
+                                "Seleccionar respuesta correcta",
+                                [""] + list(correct_options.keys()),
+                                key=f"qa_correct_{global_idx}",
+                            )
+                        else:
+                            new_answer_text = st.text_area(
+                                "Texto de nueva respuesta",
+                                key=f"qa_new_answer_text_{global_idx}",
+                                placeholder="Escribí la nueva respuesta correcta",
+                            )
 
                     qa_comment = st.text_area(
                         "Comentario QA (opcional)",
@@ -2489,11 +2514,23 @@ with tab6:
                     )
 
                     if st.button("Guardar revisión", key=f"qa_save_{global_idx}"):
-                        if qa_decision == "incorrecto" and not selected_correct:
+                        if qa_decision == "incorrecto" and not corrected_question_text.strip():
+                            st.warning("Completa el texto corregido de la pregunta antes de guardar.")
+                        elif qa_decision == "incorrecto" and answer_resolution_mode == "Usar respuesta existente" and not selected_correct:
                             st.warning("Selecciona la respuesta correcta antes de guardar.")
+                        elif qa_decision == "incorrecto" and answer_resolution_mode == "Crear nueva respuesta" and not new_answer_text.strip():
+                            st.warning("Completa el texto de la nueva respuesta antes de guardar.")
                         else:
                             feedback_type = "positive" if qa_decision == "correcto" else "negative"
-                            correct_answer = correct_options.get(selected_correct, {}) if selected_correct else {}
+                            using_existing_answer = qa_decision == "incorrecto" and answer_resolution_mode == "Usar respuesta existente"
+                            correct_answer = correct_options.get(selected_correct, {}) if using_existing_answer and selected_correct else {}
+                            corrected_question_clean = corrected_question_text.strip() if qa_decision == "incorrecto" else None
+                            correct_answer_id = correct_answer.get("id") if using_existing_answer else None
+                            new_answer_text_clean = (
+                                new_answer_text.strip()
+                                if qa_decision == "incorrecto" and answer_resolution_mode == "Crear nueva respuesta"
+                                else None
+                            )
                             qa_submit_ok = False
                             review_saved = False
 
@@ -2501,17 +2538,21 @@ with tab6:
                             if qa_comment.strip():
                                 comment_parts.append(qa_comment.strip())
                             if qa_decision == "incorrecto":
-                                comment_parts.append(
-                                    f"QA_CORRECT_ANSWER_ID={correct_answer.get('id')} QA_CORRECT_ANSWER_KEY={correct_answer.get('answerKey')}"
-                                )
+                                comment_parts.append(f"QA_CORRECTED_QUESTION={corrected_question_clean}")
+                                if correct_answer_id:
+                                    comment_parts.append(
+                                        f"QA_CORRECT_ANSWER_ID={correct_answer_id} QA_CORRECT_ANSWER_KEY={correct_answer.get('answerKey')}"
+                                    )
+                                if new_answer_text_clean:
+                                    comment_parts.append(f"QA_NEW_ANSWER_TEXT={new_answer_text_clean}")
 
                             if candidate.get("queryHistoryId"):
                                 qa_payload = {
                                     "queryHistoryId": candidate.get("queryHistoryId"),
                                     "isCorrect": qa_decision == "correcto",
-                                    "correctAnswerId": (
-                                        None if qa_decision == "correcto" else correct_answer.get("id")
-                                    ),
+                                    "correctedQuestionText": corrected_question_clean,
+                                    "correctAnswerId": correct_answer_id,
+                                    "newAnswerText": new_answer_text_clean,
                                     "notes": " | ".join(comment_parts) if comment_parts else None,
                                     "reviewedBy": "streamlit-qa",
                                     "addToRegressionDataset": True,
