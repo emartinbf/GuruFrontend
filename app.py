@@ -2223,7 +2223,7 @@ with tab6:
             by_category = latest_run.get("byCategory", {}) or {}
             if by_category:
                 st.markdown("---")
-                st.markdown("**Golden/Regression por categoría**")
+                st.markdown("**Por categoría**")
                 category_rows = []
                 for cat_name, cat_data in by_category.items():
                     category_rows.append(
@@ -2236,6 +2236,91 @@ with tab6:
                         }
                     )
                 st.dataframe(category_rows, use_container_width=True)
+
+            # Los datos de ejecución vienen dentro de detailedReport (MLMetrics/calculate)
+            # o directamente en la raíz (testing/run-golden-dataset legacy).
+            dr = latest_run.get("detailedReport") or {}
+            has_golden_results = bool(dr) or any(
+                key in latest_run
+                for key in ["totalTests", "passed", "failed", "totalDurationMs", "averageScore", "failures"]
+            )
+
+            if has_golden_results:
+                # Preferir detailedReport; caer a la raíz si no existe.
+                gr = dr if dr else latest_run
+
+                st.markdown("---")
+                st.markdown("**Resultados de ejecución**")
+
+                total_tests = int(gr.get("totalTests", 0) or 0)
+                passed     = int(gr.get("passed", 0) or 0)
+                failed     = int(gr.get("failed", 0) or 0)
+                pass_rate  = to_float(gr.get("passRate", 0))
+
+                g1, g2, g3, g4 = st.columns(4)
+                with g1:
+                    st.metric("Total", total_tests)
+                with g2:
+                    st.metric("Passed", passed)
+                with g3:
+                    st.metric("Failed", failed)
+                with g4:
+                    st.metric("Pass Rate", f"{pass_rate * 100:.1f}%")
+
+                g5, g6, g7 = st.columns(3)
+                with g5:
+                    st.metric("Duración", f"{int(gr.get('totalDurationMs', 0) or 0)} ms")
+                with g6:
+                    st.metric("Score Promedio", f"{to_float(gr.get('averageScore', 0)):.3f}")
+                with g7:
+                    st.metric("Respuestas Inactivas", int(gr.get("inactiveAnswersReturned", 0) or 0))
+
+                golden_by_cat = gr.get("byCategory", {}) or {}
+                if golden_by_cat:
+                    golden_category_rows = []
+                    for cat_name, cat_metrics in golden_by_cat.items():
+                        golden_category_rows.append(
+                            {
+                                "Categoría": cat_name,
+                                "Passed": int(cat_metrics.get("passed", 0) or 0),
+                                "Failed": int(cat_metrics.get("failed", 0) or 0),
+                                "Pass Rate (%)": to_float(cat_metrics.get("passRate", 0)) * 100,
+                                "Score Promedio": to_float(cat_metrics.get("averageScore", 0)),
+                            }
+                        )
+                    if any(row["Passed"] > 0 or row["Failed"] > 0 for row in golden_category_rows):
+                        st.markdown("---")
+                        st.subheader("Resultados por categoría")
+                        st.dataframe(golden_category_rows, use_container_width=True)
+                        st.bar_chart(
+                            [{"Categoría": r["Categoría"], "Passed": r["Passed"], "Failed": r["Failed"]} for r in golden_category_rows],
+                            x="Categoría",
+                            y=["Passed", "Failed"],
+                            use_container_width=True,
+                        )
+
+                failures = gr.get("failures", []) or []
+                st.markdown("---")
+                if failures:
+                    st.subheader(f"Failures ({len(failures)})")
+                    for failure in failures:
+                        title = f"{failure.get('testId', 'N/A')} - {str(failure.get('query', ''))[:80]}"
+                        with st.expander(title):
+                            f1, f2 = st.columns(2)
+                            with f1:
+                                st.write("**Query:**", failure.get("query"))
+                                st.write("**Categoría:**", failure.get("category"))
+                                st.write("**Expected Key:**", failure.get("expectedAnswerKey"))
+                                st.write("**Actual Key:**", failure.get("actualAnswerKey") or "N/A")
+                                st.write("**Actual Answer ID:**", failure.get("actualAnswerId") or "N/A")
+                            with f2:
+                                st.write("**Expected Score:**", f">= {failure.get('expectedMinScore')}")
+                                st.write("**Actual Score:**", f"{to_float(failure.get('actualScore', 0)):.3f}")
+                                st.write("**Duración:**", f"{int(failure.get('durationMs', 0) or 0)} ms")
+                                st.write("**Activa:**", "Sí" if to_bool(failure.get("isActiveAnswer")) else "No")
+                            st.error(failure.get("failureReason") or "Sin detalle")
+                elif total_tests > 0:
+                    st.success("Todos los tests pasaron")
 
     with dash_tab3:
         st.subheader("QA Manual")
