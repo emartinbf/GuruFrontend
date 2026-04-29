@@ -1,21 +1,90 @@
 import streamlit as st
 import requests
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 from urllib.parse import quote
 import os
+import pandas as pd
+import json
+import math
+import streamlit.components.v1 as components
 
 st.set_page_config(page_title="Galicia Guru", page_icon=":robot:", layout="wide")
 
-API_URL = st.secrets.get("api_url")
+LOCAL_API_URL = "https://localhost:44321/api"
+CLOUD_API_URL_DEFAULT = "https://poc-guru-hdf0gvb2a2f4ehgf.eastus-01.azurewebsites.net/"
+
+
+def is_streamlit_cloud() -> bool:
+    # Streamlit Community Cloud sets this marker.
+    return os.getenv("STREAMLIT_SHARING_MODE", "").lower() == "community"
+
+
+if is_streamlit_cloud():
+    RUNTIME_ENV = "Cloud"
+    API_URL = st.secrets.get("api_url") or os.getenv("API_URL") or CLOUD_API_URL_DEFAULT
+else:
+    RUNTIME_ENV = "Local"
+    API_URL = LOCAL_API_URL
 
 
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
+def emit_browser_log(message, payload=None):
+    print(message)
+    queue = st.session_state.setdefault("browser_console_queue", [])
+    queue.append({"message": message, "payload": payload})
+
+
+def flush_browser_logs():
+    queue = st.session_state.get("browser_console_queue", [])
+    if not queue:
+        return
+
+    script = f"""
+    <script>
+    (function () {{
+        const logs = {json.dumps(queue)};
+        logs.forEach(function (item) {{
+            if (item.payload === null || item.payload === undefined) {{
+                console.log(item.message);
+            }} else {{
+                console.log(item.message, item.payload);
+            }}
+        }});
+    }})();
+    </script>
+    """
+    components.html(script, height=0, width=0)
+    st.session_state.browser_console_queue = []
+
+
 def api_request(method, path, **kwargs):
     try:
-        return requests.request(method, f"{API_URL}{path}", verify=False, timeout=1500000, **kwargs)
+        request_log = f"[API REQUEST] {method.upper()} {API_URL}{path}"
+        # Mirror backend requests to browser DevTools console (F12).
+        emit_browser_log(request_log)
+        response = requests.request(method, f"{API_URL}{path}", verify=False, timeout=1500000, **kwargs)
+
+        response_log = f"[API RESPONSE] {method.upper()} {API_URL}{path}"
+        response_preview = ""
+        try:
+            response_preview = (response.text or "")[:500]
+        except Exception:
+            response_preview = "<no-text-preview>"
+
+        emit_browser_log(
+            response_log,
+            {
+                "status": int(response.status_code),
+                "ok": bool(response.ok),
+                "contentType": response.headers.get("Content-Type", ""),
+                "bodyPreview": response_preview,
+            },
+        )
+
+        return response
     except Exception as ex:
         st.error(f"Error de conexion: {str(ex)}")
         return None
@@ -116,10 +185,199 @@ def format_snapshot_option(version, active_version=None):
         return f"{version} (ACTIVA)"
     return version
 
+
+def to_float(value, default=0.0):
+    try:
+        if value is None:
+            return default
+        number = float(value)
+        if not math.isfinite(number):
+            return default
+        return number
+    except (TypeError, ValueError):
+        return default
+
+
+def parse_iso_datetime(raw_value):
+    if not raw_value:
+        return None
+    try:
+        return datetime.fromisoformat(str(raw_value).replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+
+def build_requests_per_minute(recent_items):
+    bucket = {}
+    for item in recent_items or []:
+        ts = parse_iso_datetime(item.get("timestamp"))
+        if not ts:
+            continue
+        minute_key = ts.replace(second=0, microsecond=0).isoformat()
+        bucket[minute_key] = bucket.get(minute_key, 0) + 1
+
+    return [
+        {"minute": minute_key, "requests": qty}
+        for minute_key, qty in sorted(bucket.items(), key=lambda kv: kv[0])
+    ]
+
+
+def post_with_fallback(paths, **kwargs):
+    for path in paths:
+        response = api_request("POST", path, **kwargs)
+        if response is not None and response.status_code < 500:
+            return response, path
+    return None, None
+
+
+def to_bool(value, default=False):
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in ("true", "1", "yes", "si", "y"):
+            return True
+        if lowered in ("false", "0", "no", "n"):
+            return False
+    return default
+
+
+def first_present(item, *keys, default=None):
+    for key in keys:
+        if key in item and item.get(key) is not None:
+            return item.get(key)
+    return default
+
+
+def first_non_empty_text(item, *keys):
+    for key in keys:
+        value = item.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def normalize_top_results(raw_results):
+    normalized = []
+    for idx, result in enumerate(raw_results or []):
+        if not isinstance(result, dict):
+            continue
+        answer_id = first_present(result, "answerId", "answer_id", "respuestaId", default=None)
+        answer_key = first_present(result, "answerKey", "answer_key", default=None)
+        answer_text = first_present(result, "answerText", "answer_text", "textoRespuesta", "text", default="")
+        normalized.append(
+            {
+                "rank": int(first_present(result, "rank", default=idx + 1) or (idx + 1)),
+                "respuestaId": answer_id,
+                "answerId": answer_id,
+                "answerKey": answer_key,
+                "textoRespuesta": answer_text or "",
+                "answerText": answer_text or "",
+                "score": to_float(first_present(result, "score", default=0.0), default=0.0),
+            }
+        )
+    return normalized
+
+
+def normalize_recent_item(item):
+    if not isinstance(item, dict):
+        return {}
+
+    original_query = first_non_empty_text(item, "originalQuery", "original_query", "query", "queryText", "query_text")
+    normalized = {
+        "id": first_present(item, "id", default=None),
+        "queryHistoryId": first_present(item, "queryHistoryId", "query_history_id", "id", default=None),
+        "queryHash": first_non_empty_text(item, "queryHash", "query_hash"),
+        "originalQuery": original_query,
+        "query": original_query,
+        "processedQuery": first_non_empty_text(item, "processedQuery", "processed_query"),
+        "answerId": first_present(item, "answerId", "answer_id", default=None),
+        "answerText": first_present(item, "answerText", "answer_text", default="") or "",
+        "score": to_float(first_present(item, "score", "confidence", default=0.0), default=0.0),
+        "confidence": to_float(first_present(item, "score", "confidence", default=0.0), default=0.0),
+        "confidenceLevel": first_present(item, "confidenceLevel", "confidence_level", default=None),
+        "topResults": normalize_top_results(first_present(item, "topResults", "top_results", default=[])),
+        "hasUserFeedback": to_bool(first_present(item, "hasUserFeedback", "has_user_feedback", default=False)),
+        "hasQAReview": to_bool(first_present(item, "hasQAReview", "has_qa_review", default=False)),
+        "needsReview": to_bool(first_present(item, "needsReview", "needs_review", default=False)),
+        "cacheHit": to_bool(first_present(item, "cacheHit", "cache_hit", default=False)),
+        "totalLatencyMs": to_float(first_present(item, "totalLatencyMs", "total_latency_ms", default=0.0), default=0.0),
+        "timestamp": first_present(item, "timestamp", "createdAt", "created_at", default=None),
+        "version": first_present(item, "version", default=None),
+        "resultado": first_present(item, "resultado", "result", default=None),
+    }
+    return normalized
+
+
+def normalize_recent_payload(payload):
+    items = payload
+    if isinstance(payload, dict):
+        items = (
+            payload.get("items")
+            or payload.get("results")
+            or payload.get("recent")
+            or payload.get("reviews")
+            or payload.get("data")
+            or []
+        )
+
+    if not isinstance(items, list):
+        return []
+
+    normalized_items = []
+    for item in items:
+        normalized = normalize_recent_item(item)
+        if normalized:
+            normalized_items.append(normalized)
+    return normalized_items
+
+
+def build_feedback_payload(
+    query_history_id,
+    query_hash,
+    original_query,
+    answer_id,
+    score,
+    feedback_type,
+    version,
+    comment=None,
+):
+    # Enviar queryHistoryId permite actualizar feedback de forma precisa (1 solo documento).
+    return {
+        "queryHistoryId": (query_history_id or "").strip() or None,
+        "queryHash": query_hash or "",
+        "originalQuery": original_query or "",
+        "answerId": answer_id,
+        "score": score,
+        "feedbackType": feedback_type,
+        "comment": comment,
+        "version": version,
+    }
+
+
+def build_feedback_tracking_key(query_history_id=None, query_hash=None, original_query=None):
+    if (query_history_id or "").strip():
+        return f"qh:{(query_history_id or '').strip()}"
+    if (query_hash or "").strip():
+        return f"qhsh:{(query_hash or '').strip()}"
+    return f"q:{(original_query or '').strip().lower()}"
+
 st.title("Galicia Guru - Sistema de Conocimiento")
 st.markdown("---")
 
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["Busqueda", "Base Conocimiento", "Documentos", "Metricas", "Testing"])
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+    "Busqueda",
+    "Base Conocimiento",
+    "Documentos",
+    "Metricas",
+    "Testing",
+    "Dashboard QA",
+    "Regression DataSet",
+])
 
 with tab1:
     st.header("Busqueda Inteligente")
@@ -127,6 +385,8 @@ with tab1:
 
     if "search_result" not in st.session_state:
         st.session_state.search_result = None
+    if "feedback_sent_keys" not in st.session_state:
+        st.session_state.feedback_sent_keys = []
 
     if st.button("Buscar", type="primary") and query:
         st.session_state.search_result = None
@@ -165,6 +425,7 @@ with tab1:
                 with detail_col2:
                     st.write("**Score:**", data.get("score") if data.get("score") is not None else "N/A")
                     st.write("**Query Hash:**", debug_data.get("queryHash") or "N/A")
+                    st.write("**QueryHistoryId:**", data.get("queryHistoryId") or "N/A")
                 with detail_col3:
                     st.write("**Query original:**", debug_data.get("originalQuery") or data.get("query") or "N/A")
                     st.write("**Cache Hit:**", debug_data.get("cacheHit") if debug_data.get("cacheHit") is not None else "N/A")
@@ -176,26 +437,42 @@ with tab1:
             # ✅ BOTONES DE FEEDBACK
             st.markdown("---")
             st.markdown("**¿Esta respuesta fue útil?**")
+            feedback_key = build_feedback_tracking_key(
+                query_history_id=data.get("queryHistoryId") or debug_data.get("queryHistoryId"),
+                query_hash=debug_data.get("queryHash", ""),
+                original_query=debug_data.get("originalQuery") or data.get("query"),
+            )
+            already_sent_feedback = feedback_key in (st.session_state.get("feedback_sent_keys") or [])
+
+            if already_sent_feedback:
+                st.success("✅ Feedback enviado para esta búsqueda")
+
             col_feedback1, col_feedback2, col_feedback3 = st.columns([1, 1, 4])
     
             with col_feedback1:
-                if st.button("👍 Útil", key="btn_positive_feedback"):
-                    feedback_payload = {
-                        "queryHash": debug_data.get('queryHash', ''),
-                        "originalQuery": debug_data.get('originalQuery') or data.get('query'),
-                        "answerId": data.get('answerId'),
-                        "score": data.get('score'),
-                        "feedbackType": "positive",
-                        "version": data.get('version')
-                    }
+                if (not already_sent_feedback) and st.button("👍 Útil", key="btn_positive_feedback"):
+                    feedback_payload = build_feedback_payload(
+                        query_history_id=data.get("queryHistoryId") or debug_data.get("queryHistoryId"),
+                        query_hash=debug_data.get("queryHash", ""),
+                        original_query=debug_data.get("originalQuery") or data.get("query"),
+                        answer_id=data.get("answerId"),
+                        score=data.get("score"),
+                        feedback_type="positive",
+                        version=data.get("version"),
+                    )
                     feedback_response = api_request("POST", "/quality/feedback", json=feedback_payload)
-                    if feedback_response and feedback_response.status_code == 200:
+                    if feedback_response and feedback_response.status_code in (200, 201):
+                        sent_keys = st.session_state.get("feedback_sent_keys") or []
+                        if feedback_key not in sent_keys:
+                            sent_keys.append(feedback_key)
+                        st.session_state.feedback_sent_keys = sent_keys
                         st.success("✅ Gracias por tu feedback!")
+                        st.rerun()
                     elif feedback_response:
                         st.error("Error enviando feedback")
     
             with col_feedback2:
-                if st.button("👎 No útil", key="btn_negative_feedback"):
+                if (not already_sent_feedback) and st.button("👎 No útil", key="btn_negative_feedback"):
                     st.session_state.show_feedback_form = True
        
             # Formulario de feedback negativo con comentario
@@ -205,17 +482,22 @@ with tab1:
                     submit_negative = st.form_submit_button("Enviar feedback")
                     
                     if submit_negative:
-                        feedback_payload = {
-                            "queryHash": debug_data.get('queryHash', ''),
-                            "originalQuery": debug_data.get('originalQuery') or data.get('query'),
-                            "answerId": data.get('answerId'),
-                            "score": data.get('score'),
-                            "feedbackType": "negative",
-                            "comment": feedback_comment or None,
-                            "version": data.get('version')
-                        }
+                        feedback_payload = build_feedback_payload(
+                            query_history_id=data.get("queryHistoryId") or debug_data.get("queryHistoryId"),
+                            query_hash=debug_data.get("queryHash", ""),
+                            original_query=debug_data.get("originalQuery") or data.get("query"),
+                            answer_id=data.get("answerId"),
+                            score=data.get("score"),
+                            feedback_type="negative",
+                            version=data.get("version"),
+                            comment=feedback_comment or None,
+                        )
                         feedback_response = api_request("POST", "/quality/feedback", json=feedback_payload)
-                        if feedback_response and feedback_response.status_code == 200:
+                        if feedback_response and feedback_response.status_code in (200, 201):
+                            sent_keys = st.session_state.get("feedback_sent_keys") or []
+                            if feedback_key not in sent_keys:
+                                sent_keys.append(feedback_key)
+                            st.session_state.feedback_sent_keys = sent_keys
                             st.success("✅ Gracias por tu feedback!")
                             st.session_state.show_feedback_form = False
                             st.rerun()
@@ -737,7 +1019,7 @@ with tab4:
             render_error_response(dist_resp)
 
         if recent_resp and recent_resp.status_code == 200:
-            st.session_state.metrics_payload["recent"] = recent_resp.json()
+            st.session_state.metrics_payload["recent"] = normalize_recent_payload(recent_resp.json() or [])
         elif recent_resp:
             render_error_response(recent_resp)
 
@@ -1531,22 +1813,26 @@ with tab5:
                 }
 
                 for idx, fb in enumerate(recent_feedback):
-                    feedback_type = (fb.get("feedbackType") or "").lower()
+                    feedback_type = (fb.get("feedbackType") or fb.get("feedback_type") or "").lower()
                     icon = "👍" if feedback_type == "positive" else "👎"
-                    answer_key = fb.get("answerKey") or "Sin key"
-                    title = f"{icon} {fb.get('answerId', 'N/A')} [{answer_key}]"
+                    answer_key = fb.get("answerKey") or fb.get("answer_key") or "Sin key"
+                    title = f"{icon} {fb.get('answerId') or fb.get('answer_id') or 'N/A'} [{answer_key}]"
 
                     with st.expander(title):
                         c_left, c_right = st.columns(2)
                         with c_left:
-                            st.write("**Pregunta del usuario:**", fb.get("originalQuery") or "N/A")
+                            st.write("**Pregunta del usuario:**", fb.get("originalQuery") or fb.get("original_query") or "N/A")
                             st.write("**Comentario:**", fb.get("comment") or "(sin comentario)")
-                            answer_text = feedback_respuesta_by_id.get(fb.get("answerId"), "")
+                            answer_text = (
+                                fb.get("answerText")
+                                or fb.get("answer_text")
+                                or feedback_respuesta_by_id.get(fb.get("answerId") or fb.get("answer_id"), "")
+                            )
                             st.write("**Texto de la respuesta:**", answer_text or "N/A")
                         with c_right:
                             timestamp = fb.get("timestamp") or "N/A"
                             st.write("**Fecha:**", timestamp)
-                            st.write("**Tipo:**", fb.get("feedbackType") or "N/A")
+                            st.write("**Tipo:**", fb.get("feedbackType") or fb.get("feedback_type") or "N/A")
                             st.write("**Versión:**", fb.get("version") or "N/A")
                             st.write("**Score:**", fb.get("score") if fb.get("score") is not None else "N/A")
 
@@ -1609,8 +1895,621 @@ with tab5:
                             if failure.get("suggestedImprovement"):
                                 st.warning(f"Mejora sugerida: {failure.get('suggestedImprovement')}")
 
+with tab6:
+    st.header("Dashboard QA y Negocio")
+    st.caption("Vista unificada para monitoreo operativo, calidad del modelo y QA manual.")
+
+    if "ops_dashboard" not in st.session_state:
+        st.session_state.ops_dashboard = {}
+    if "quality_runs" not in st.session_state:
+        st.session_state.quality_runs = []
+    if "qa_candidates" not in st.session_state:
+        st.session_state.qa_candidates = []
+
+    dash_tab1, dash_tab2, dash_tab3 = st.tabs([
+        "🟦 Métricas Operativas",
+        "🟩 Calidad",
+        "🧠 QA Manual",
+    ])
+
+    with dash_tab1:
+        st.subheader("Métricas Operativas")
+
+        d1, d2, d3 = st.columns([1, 1, 1])
+        with d1:
+            ops_from = st.date_input("Desde", value=datetime.now().date() - timedelta(days=7), key="ops_from")
+        with d2:
+            ops_to = st.date_input("Hasta", value=datetime.now().date(), key="ops_to")
+        with d3:
+            ops_recent_limit = st.number_input(
+                "Muestra reciente",
+                min_value=50,
+                max_value=5000,
+                value=500,
+                step=50,
+                key="ops_recent_limit",
+            )
+
+        if st.button("Actualizar dashboard operativo", type="primary", key="btn_ops_refresh"):
+            from_dt = datetime.combine(ops_from, time.min).isoformat()
+            to_dt = datetime.combine(ops_to, time.max).isoformat()
+            params_range = {"from": from_dt, "to": to_dt}
+
+            with st.spinner("Cargando métricas operativas..."):
+                summary_resp = api_request("GET", "/Metrics/summary", params=params_range)
+                perf_resp = api_request("GET", "/Metrics/performance", params=params_range)
+                dist_resp = api_request("GET", "/Metrics/distribution", params=params_range)
+                recent_resp = api_request("GET", "/Metrics/recent", params={"limit": int(ops_recent_limit)})
+
+            if summary_resp and summary_resp.status_code == 200:
+                st.session_state.ops_dashboard["summary"] = summary_resp.json()
+            elif summary_resp:
+                render_error_response(summary_resp)
+
+            if perf_resp and perf_resp.status_code == 200:
+                st.session_state.ops_dashboard["performance"] = perf_resp.json()
+            elif perf_resp:
+                render_error_response(perf_resp)
+
+            if dist_resp and dist_resp.status_code == 200:
+                st.session_state.ops_dashboard["distribution"] = dist_resp.json()
+            elif dist_resp:
+                render_error_response(dist_resp)
+
+            if recent_resp and recent_resp.status_code == 200:
+                recent_raw = recent_resp.json() or []
+                recent_normalized = normalize_recent_payload(recent_raw)
+                st.session_state.ops_dashboard["recent"] = recent_normalized
+                if isinstance(recent_raw, list):
+                    raw_count = len(recent_raw)
+                elif isinstance(recent_raw, dict):
+                    raw_items = (
+                        recent_raw.get("items")
+                        or recent_raw.get("results")
+                        or recent_raw.get("recent")
+                        or recent_raw.get("reviews")
+                        or recent_raw.get("data")
+                        or []
+                    )
+                    raw_count = len(raw_items) if isinstance(raw_items, list) else 0
+                else:
+                    raw_count = 0
+
+                st.session_state.ops_dashboard["recent_debug"] = {
+                    "rawCount": raw_count,
+                    "normalizedCount": len(recent_normalized),
+                    "firstTimestamp": recent_normalized[0].get("timestamp") if recent_normalized else None,
+                    "firstLatencyMs": recent_normalized[0].get("totalLatencyMs") if recent_normalized else None,
+                }
+                emit_browser_log(
+                    "[OPS METRICS] /Metrics/recent normalized",
+                    {
+                        "count": len(recent_normalized),
+                        "sample": recent_normalized[:2],
+                    },
+                )
+            elif recent_resp:
+                emit_browser_log(
+                    "[OPS METRICS] /Metrics/recent error",
+                    {"status": recent_resp.status_code, "body": recent_resp.text[:500]},
+                )
+                render_error_response(recent_resp)
+
+        ops_payload = st.session_state.get("ops_dashboard", {})
+        ops_summary = ops_payload.get("summary", {})
+        ops_performance = ops_payload.get("performance", {})
+        ops_distribution = ops_payload.get("distribution", {})
+        ops_recent = ops_payload.get("recent", []) or []
+        ops_recent_debug = ops_payload.get("recent_debug", {}) or {}
+
+        if not ops_summary and not ops_performance:
+            st.info("Presiona 'Actualizar dashboard operativo' para cargar datos.")
+        else:
+            total_searches = int(ops_performance.get("totalSearches", ops_summary.get("totalSearches", 0)) or 0)
+            cache_info = ops_performance.get("cache", {}) or {}
+            latency_info = ops_performance.get("latency", {}) or {}
+            hit_ratio = to_float(cache_info.get("hitRatio", ops_summary.get("cacheHitRatio", 0)))
+            avg_latency = to_float(latency_info.get("averageMs", ops_summary.get("averageLatencyMs", 0)))
+
+            rpm_series = build_requests_per_minute(ops_recent)
+            peak_rpm = max((row.get("requests", 0) for row in rpm_series), default=0)
+
+            k1, k2, k3, k4 = st.columns(4)
+            with k1:
+                st.metric("Consultas totales", total_searches)
+            with k2:
+                st.metric("Latencia promedio", f"{avg_latency:.2f} ms")
+            with k3:
+                st.metric("Cache hit ratio", f"{hit_ratio * 100:.2f}%")
+            with k4:
+                st.metric("Peak requests/min", int(peak_rpm))
+
+            st.markdown("---")
+            c1, c2 = st.columns(2)
+            with c1:
+                st.markdown("**Requests por minuto**")
+                if rpm_series:
+                    st.line_chart(rpm_series, x="minute", y="requests", use_container_width=True)
+                else:
+                    st.info("Sin datos suficientes para requests por minuto.")
+
+            with c2:
+                st.markdown("**Latencia reciente**")
+                latency_series = [
+                    {
+                        "timestamp": item.get("timestamp"),
+                        "latencyMs": to_float(item.get("totalLatencyMs", 0)),
+                    }
+                    for item in sorted(ops_recent, key=lambda x: x.get("timestamp", ""))
+                ]
+                if latency_series:
+                    st.line_chart(latency_series, x="timestamp", y="latencyMs", use_container_width=True)
+                else:
+                    st.info("Sin datos recientes para latencia.")
+
+            if ops_recent_debug:
+                st.caption(
+                    "Debug /Metrics/recent -> "
+                    f"raw: {ops_recent_debug.get('rawCount', 0)} | "
+                    f"normalized: {ops_recent_debug.get('normalizedCount', 0)} | "
+                    f"firstTimestamp: {ops_recent_debug.get('firstTimestamp') or 'N/A'} | "
+                    f"firstLatencyMs: {ops_recent_debug.get('firstLatencyMs') if ops_recent_debug.get('firstLatencyMs') is not None else 'N/A'}"
+                )
+
+            st.markdown("---")
+            st.markdown("**Latencia por componente**")
+            component_rows = []
+            component_metrics = latency_info.get("components", {}) or {}
+            for name, value in component_metrics.items():
+                component_rows.append({"Componente": name, "LatencyMs": to_float(value)})
+
+            if not component_rows:
+                component_rows = [
+                    {"Componente": "withCache", "LatencyMs": to_float(latency_info.get("withCacheMs", 0))},
+                    {"Componente": "withoutCache", "LatencyMs": to_float(latency_info.get("withoutCacheMs", 0))},
+                ]
+
+            st.bar_chart(component_rows, x="Componente", y="LatencyMs", use_container_width=True)
+
+            st.markdown("---")
+            st.markdown("**Distribución de resultados**")
+            result_distribution = ops_distribution.get("resultado", ops_summary.get("resultadoDistribution", {}))
+            if result_distribution:
+                distribution_rows = [
+                    {"Resultado": key, "Cantidad": to_float(val)} for key, val in result_distribution.items()
+                ]
+                st.bar_chart(
+                    distribution_rows,
+                    x="Resultado",
+                    y="Cantidad",
+                    use_container_width=True,
+                )
+            else:
+                st.info("Sin datos de distribución.")
+
+    with dash_tab2:
+        st.subheader("Calidad del Modelo")
+
+        snapshots = load_snapshots_list()
+        snapshot_versions = [s.get("version") for s in snapshots if s.get("version")]
+        active_snapshot_version = get_active_snapshot_version()
+
+        q1, q2,  q4 = st.columns([2, 2, 1])
+        with q1:
+            quality_dataset = st.selectbox(
+                "Dataset",
+                ["Golden", "Regresion"],
+                key="quality_dataset_type",
+            )
+        with q2:
+            if snapshot_versions:
+                quality_snapshot = st.selectbox(
+                    "Snapshot",
+                    snapshot_versions,
+                    index=snapshot_versions.index(active_snapshot_version) if active_snapshot_version in snapshot_versions else 0,
+                    format_func=lambda v: format_snapshot_option(v, active_snapshot_version),
+                    key="quality_snapshot",
+                )
+            else:
+                st.warning("No hay snapshots.")
+                quality_snapshot = None
+        with q4:
+            st.write("")
+            run_quality = st.button("Ejecutar corrida", type="primary", key="btn_run_quality_dashboard")
+
+        if run_quality:
+            payload = {
+                "useGoldenDataset": quality_dataset == "Golden",
+                "version": quality_snapshot,
+                "useFeedback": quality_dataset != "Golden",           
+            }
+
+            with st.spinner("Ejecutando métricas de calidad..."):
+                ml_response, used_path = post_with_fallback([
+                    "/mlmetrics/calculate",
+                    "/mlmetrics/golden-dataset",
+                ], json=payload, params={"version": quality_snapshot} if quality_snapshot else None)
+
+            if ml_response and ml_response.status_code == 200:
+                run_payload = ml_response.json() or {}
+                run_payload["_sourcePath"] = used_path
+                run_payload["_dataset"] = quality_dataset
+                run_payload["_snapshot"] = quality_snapshot
+                run_payload["_executedAt"] = datetime.now().isoformat()
+
+                history = st.session_state.quality_runs
+                history.append(run_payload)
+                st.session_state.quality_runs = history[-25:]
+                st.success("Corrida de calidad completada")
+            elif ml_response:
+                render_error_response(ml_response)
+            else:
+                st.error("No se pudo obtener respuesta de endpoints de ML metrics.")
+
+        quality_runs = st.session_state.get("quality_runs", [])
+        latest_run = quality_runs[-1] if quality_runs else None
+        previous_run = quality_runs[-2] if len(quality_runs) > 1 else None
+
+        if not latest_run:
+            st.info("Ejecuta una corrida para ver métricas de calidad, deltas y matriz de confusión.")
+        else:
+            latest_accuracy = to_float(latest_run.get("accuracy", latest_run.get("passRate", 0)))
+            latest_precision = to_float(latest_run.get("precision", 0))
+            latest_recall = to_float(latest_run.get("recall", 0))
+            latest_topk = to_float(
+                latest_run.get("topKAccuracy", latest_run.get("topkAccuracy", latest_run.get("topK", 0)))
+            )
+
+            if previous_run:
+                delta_accuracy = latest_accuracy - to_float(previous_run.get("accuracy", previous_run.get("passRate", 0)))
+                delta_precision = latest_precision - to_float(previous_run.get("precision", 0))
+                delta_recall = latest_recall - to_float(previous_run.get("recall", 0))
+                delta_topk = latest_topk - to_float(
+                    previous_run.get("topKAccuracy", previous_run.get("topkAccuracy", previous_run.get("topK", 0)))
+                )
+            else:
+                delta_accuracy = delta_precision = delta_recall = delta_topk = 0.0
+
+            st.caption(
+                f"Última corrida: {latest_run.get('_executedAt', 'N/A')} | Dataset: {latest_run.get('_dataset', 'N/A')} | Snapshot: {latest_run.get('_snapshot', 'N/A')}"
+            )
+
+            m1, m2, m3 = st.columns(3)
+            with m1:
+                st.metric(
+                    "Accuracy",
+                    f"{latest_accuracy * 100:.2f}%",
+                    help="De todas las predicciones que hice, ¿qué porcentaje fue correcto? = (TP + TN) / (TP + FP + FN + TN)",
+                )
+            with m2:
+                st.metric(
+                    "Precision",
+                    f"{latest_precision * 100:.2f}%",
+                    help="De las respuestas que el sistema retornó, ¿cuántas eran correctas? = TP / (TP + FP)",
+                )
+            with m3:
+                st.metric(
+                    "Recall",
+                    f"{latest_recall * 100:.2f}%",
+                    help="De las respuestas correctas que existían, ¿cuántas encontró el sistema? = TP / (TP + FN)",
+                )
+
+            st.markdown("---")
+            st.markdown("**Matriz de confusión**")
+
+            cm = latest_run.get("confusionMatrix", {}) or {}
+            tp = int(cm.get("truePositives", latest_run.get("truePositives", 0)) or 0)
+            fp = int(cm.get("falsePositives", latest_run.get("falsePositives", 0)) or 0)
+            fn = int(cm.get("falseNegatives", latest_run.get("falseNegatives", 0)) or 0)
+            tn = int(cm.get("trueNegatives", latest_run.get("trueNegatives", 0)) or 0)
+
+            cm_df = pd.DataFrame(
+                [[tp, fn], [fp, tn]],
+                index=["Real Positivo", "Real Negativo"],
+                columns=["Pred Positivo", "Pred Negativo"],
+            )
+            st.dataframe(cm_df, use_container_width=True)
+
+            st.markdown("---")
+            st.markdown("**Support por respuesta/categoría**")
+            support = latest_run.get("support", {}) or {}
+            if support:
+                support_rows = [{"item": key, "support": int(val)} for key, val in support.items()]
+                st.dataframe(support_rows, use_container_width=True)
+                st.bar_chart(support_rows, x="item", y="support", use_container_width=True)
+            else:
+                st.info("No hay información de support en la última corrida.")
+
+            by_category = latest_run.get("byCategory", {}) or {}
+            if by_category:
+                st.markdown("---")
+                st.markdown("**Golden/Regression por categoría**")
+                category_rows = []
+                for cat_name, cat_data in by_category.items():
+                    category_rows.append(
+                        {
+                            "Categoria": cat_name,
+                            "Support": int(cat_data.get("support", cat_data.get("totalTests", 0)) or 0),
+                            "Accuracy": to_float(cat_data.get("passRate", cat_data.get("accuracy", 0))),
+                            "Precision": to_float(cat_data.get("precision", 0)),
+                            "Recall": to_float(cat_data.get("recall", 0)),
+                        }
+                    )
+                st.dataframe(category_rows, use_container_width=True)
+
+    with dash_tab3:
+        st.subheader("QA Manual")
+        st.caption("Casos candidatos: preguntas ordenadas por menor confidence para revisión rápida.")
+
+        qa_save_message = st.session_state.get("qa_save_message")
+        if qa_save_message:
+            st.success(qa_save_message)
+            st.session_state.qa_save_message = None
+
+        qa_col1, qa_col2, _ = st.columns([1, 1, 6])
+        with qa_col1:
+            qa_limit = st.number_input("Muestra base", min_value=10, max_value=100, value=20, step=10, key="qa_limit")
+        with qa_col2:
+            st.write("")
+            st.write("")
+            run_generate_qa = st.button("Generar lista QA", type="primary", key="btn_generate_qa")
+
+        if run_generate_qa:
+            with st.spinner(f"Armando lista automática de {qa_limit} preguntas..."):
+                pending_response = api_request("GET", "/qa/pending-reviews", params={"limit": int(qa_limit)})
+
+                candidates = []
+                if pending_response and pending_response.status_code == 200:
+                    pending_payload = pending_response.json() or {}
+                    pending_reviews = (
+                        pending_payload.get("reviews")
+                        if isinstance(pending_payload, dict)
+                        else pending_payload
+                    ) or []
+
+                    for review in pending_reviews:
+                        normalized_review = normalize_recent_item(review)
+                        top3 = normalize_top_results(
+                            review.get("topResults")
+                            or review.get("top_results")
+                            or review.get("top3Alternatives")
+                            or []
+                        )
+                        predicted = top3[0] if top3 else {
+                            "answerId": normalized_review.get("answerId"),
+                            "answerText": normalized_review.get("answerText") or "",
+                        }
+
+                        candidates.append(
+                            {
+                                "query": normalized_review.get("originalQuery") or normalized_review.get("query") or "",
+                                "queryHistoryId": normalized_review.get("queryHistoryId") or review.get("queryHistoryId"),
+                                "queryHash": normalized_review.get("queryHash") or review.get("queryHash", ""),
+                                "version": normalized_review.get("version") or review.get("version"),
+                                "timestamp": normalized_review.get("timestamp") or review.get("timestamp"),
+                                "confidence": to_float(
+                                    normalized_review.get("score", review.get("predictedScore", 0)),
+                                    default=0.0,
+                                ),
+                                "predictedAnswerId": (
+                                    predicted.get("respuestaId")
+                                    or predicted.get("answerId")
+                                    or normalized_review.get("answerId")
+                                ),
+                                "predictedAnswerText": (
+                                    predicted.get("textoRespuesta")
+                                    or predicted.get("answerText")
+                                    or normalized_review.get("answerText")
+                                    or ""
+                                ),
+                                "top3": top3,
+                            }
+                        )
+
+                if not candidates:
+                    st.info("No hay pendientes para QA manual en /qa/pending-reviews.")
+
+                st.session_state.qa_candidates = candidates
+
+        qa_candidates = st.session_state.get("qa_candidates", []) or []
+
+        if not qa_candidates:
+            st.info("Genera la lista QA para comenzar revisión manual.")
+        else:
+            st.success(f"{len(qa_candidates)} preguntas cargadas para QA manual")
+
+            respuestas_catalog = load_respuestas_catalog()
+            correct_options = {
+                f"{r.get('id')} [{r.get('answerKey') or 'Sin key'}]": r
+                for r in respuestas_catalog
+                if r.get("id")
+            }
+
+            for global_idx, candidate in enumerate(qa_candidates):
+                title = f"#{global_idx + 1} | conf {candidate.get('confidence', 0):.3f} | {candidate.get('query', '')[:90]}"
+
+                with st.expander(title, expanded=(global_idx == 0)):
+                    st.write("**Pregunta:**", candidate.get("query") or "N/A")
+                    st.write("**Respuesta predicha:**", candidate.get("predictedAnswerText") or "N/A")
+                    st.write("**AnswerId predicho:**", candidate.get("predictedAnswerId") or "N/A")
+                    st.write("**Confidence:**", f"{to_float(candidate.get('confidence', 0)):.3f}")
+
+                    top3 = candidate.get("top3", []) or []
+                    if top3:
+                        st.markdown("**Top 3 respuestas sugeridas**")
+                        st.dataframe(
+                            [
+                                {
+                                    "Rank": row.get("rank"),
+                                    "RespuestaId": row.get("respuestaId"),
+                                    "Score": row.get("score"),
+                                    "Texto": (row.get("textoRespuesta") or "")[:200],
+                                }
+                                for row in top3
+                            ],
+                            use_container_width=True,
+                        )
+
+                    qa_decision = st.radio(
+                        "Evaluación QA",
+                        ["correcto", "incorrecto"],
+                        horizontal=True,
+                        key=f"qa_decision_{global_idx}",
+                    )
+
+                    selected_correct = ""
+                    if qa_decision == "incorrecto":
+                        selected_correct = st.selectbox(
+                            "Seleccionar respuesta correcta",
+                            [""] + list(correct_options.keys()),
+                            key=f"qa_correct_{global_idx}",
+                        )
+
+                    qa_comment = st.text_area(
+                        "Comentario QA (opcional)",
+                        key=f"qa_comment_{global_idx}",
+                        placeholder="Contexto para negocio/QA (error observado, detalle, etc.)",
+                    )
+
+                    if st.button("Guardar revisión", key=f"qa_save_{global_idx}"):
+                        if qa_decision == "incorrecto" and not selected_correct:
+                            st.warning("Selecciona la respuesta correcta antes de guardar.")
+                        else:
+                            feedback_type = "positive" if qa_decision == "correcto" else "negative"
+                            correct_answer = correct_options.get(selected_correct, {}) if selected_correct else {}
+                            qa_submit_ok = False
+                            review_saved = False
+
+                            comment_parts = []
+                            if qa_comment.strip():
+                                comment_parts.append(qa_comment.strip())
+                            if qa_decision == "incorrecto":
+                                comment_parts.append(
+                                    f"QA_CORRECT_ANSWER_ID={correct_answer.get('id')} QA_CORRECT_ANSWER_KEY={correct_answer.get('answerKey')}"
+                                )
+
+                            if candidate.get("queryHistoryId"):
+                                qa_payload = {
+                                    "queryHistoryId": candidate.get("queryHistoryId"),
+                                    "isCorrect": qa_decision == "correcto",
+                                    "correctAnswerId": (
+                                        None if qa_decision == "correcto" else correct_answer.get("id")
+                                    ),
+                                    "notes": " | ".join(comment_parts) if comment_parts else None,
+                                    "reviewedBy": "streamlit-qa",
+                                    "addToRegressionDataset": True,
+                                }
+                                qa_response = api_request("POST", "/qa/submit-review", json=qa_payload)
+                                if qa_response and qa_response.status_code in (200, 201):
+                                    qa_submit_ok = True
+                                    review_saved = True
+                                    st.success("Review QA guardada")
+                                elif qa_response and qa_response.status_code != 404:
+                                    render_error_response(qa_response)
+
+                            if not qa_submit_ok:
+                                feedback_payload = build_feedback_payload(
+                                    query_history_id=candidate.get("queryHistoryId"),
+                                    query_hash=candidate.get("queryHash") or "",
+                                    original_query=candidate.get("query") or "",
+                                    answer_id=candidate.get("predictedAnswerId"),
+                                    score=candidate.get("confidence"),
+                                    feedback_type=feedback_type,
+                                    version=candidate.get("version"),
+                                    comment=" | ".join(comment_parts) if comment_parts else None,
+                                )
+
+                                feedback_response = api_request("POST", "/quality/feedback", json=feedback_payload)
+                                if feedback_response and feedback_response.status_code in (200, 201):
+                                    review_saved = True
+                                    st.success("Feedback QA guardado")
+                                elif feedback_response:
+                                    render_error_response(feedback_response)
+
+                            if review_saved:
+                                updated_candidates = st.session_state.get("qa_candidates", []) or []
+                                if 0 <= global_idx < len(updated_candidates):
+                                    updated_candidates.pop(global_idx)
+                                    st.session_state.qa_candidates = updated_candidates
+                                st.session_state.qa_save_message = "✅ Revisión guardada correctamente."
+                                st.rerun()
+
+                            st.caption("Regresión: gestionada automáticamente por el backend.")
+
+with tab7:
+    st.header("Regression DataSet")
+    st.caption("Listado y desactivación de entradas. Alta y edición no disponibles por ahora.")
+
+    if "regression_entries_payload" not in st.session_state:
+        st.session_state.regression_entries_payload = {"total": 0, "entries": []}
+
+    if st.button("Cargar Regression DataSet", type="primary", key="btn_load_regression_entries"):
+        response = api_request("GET", "/Regression/entries")
+        if response and response.status_code == 200:
+            payload = response.json() or {}
+            entries = payload.get("entries") if isinstance(payload, dict) else payload
+            entries = entries or []
+            total = payload.get("total", len(entries)) if isinstance(payload, dict) else len(entries)
+            st.session_state.regression_entries_payload = {
+                "total": int(total),
+                "entries": entries,
+            }
+            st.success("Regression DataSet cargado")
+        elif response:
+            render_error_response(response)
+
+    regression_payload = st.session_state.get("regression_entries_payload", {}) or {}
+    regression_entries = regression_payload.get("entries", []) or []
+    regression_total = int(regression_payload.get("total", len(regression_entries)) or 0)
+
+    if not regression_entries:
+        st.info("No hay registros cargados. Presiona 'Cargar Regression DataSet'.")
+    else:
+        st.metric("Total", regression_total)
+
+        st.markdown("---")
+        h1, h2, h3 = st.columns([4, 6, 2])
+        with h1:
+            st.markdown("**queryText**")
+        with h2:
+            st.markdown("**expectedAnswerText**")
+        with h3:
+            st.markdown("**Acción**")
+
+        for idx, entry in enumerate(regression_entries):
+            entry_id = entry.get("id")
+            query_text = entry.get("queryText") or "-"
+            expected_answer_text = entry.get("expectedAnswerText") or "-"
+
+            c1, c2, c3 = st.columns([4, 6, 2])
+            with c1:
+                st.write(query_text)
+            with c2:
+                st.write(expected_answer_text)
+            with c3:
+                disable_btn = st.button(
+                    "Deshabilitar",
+                    key=f"btn_disable_reg_entry_{idx}",
+                )
+
+            if disable_btn and entry_id:
+                encoded_entry_id = quote(str(entry_id), safe="")
+                disable_response = api_request("DELETE", f"/Regression/entries/{encoded_entry_id}")
+                if disable_response and disable_response.status_code in (200, 204):
+                    st.success("Entrada desactivada")
+                    updated_entries = st.session_state.regression_entries_payload.get("entries", []) or []
+                    st.session_state.regression_entries_payload["entries"] = [
+                        item
+                        for item in updated_entries
+                        if item.get("id") != entry_id
+                    ]
+                    st.rerun()
+                elif disable_response:
+                    render_error_response(disable_response)
+
 with st.sidebar:
     st.header("Configuracion")
+    st.caption(f"Entorno: {RUNTIME_ENV}")
     st.caption(f"API: {API_URL}")
 
     if "config_summary" not in st.session_state:
@@ -1685,3 +2584,5 @@ with st.sidebar:
                 ],
                 use_container_width=True,
             )
+
+flush_browser_logs()
