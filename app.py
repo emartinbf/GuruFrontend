@@ -877,6 +877,13 @@ with tab2:
 
         if "pending_questions" not in st.session_state:
             st.session_state.pending_questions = []
+        if "pending_resolution_message" not in st.session_state:
+            st.session_state.pending_resolution_message = None
+
+        pending_resolution_message = st.session_state.get("pending_resolution_message")
+        if pending_resolution_message:
+            st.success(pending_resolution_message)
+            st.session_state.pending_resolution_message = None
 
         if st.button("Ver pendientes", key="btn_pending_questions"):
             response = api_request("GET", "/kb/unanswered-questions/pending")
@@ -903,10 +910,22 @@ with tab2:
                 key="select_pending_question"
             )
 
+            selected_pending_item = pending_map.get(selected_pending, {}) if selected_pending else {}
+            pending_generated_answer = first_present(
+                selected_pending_item,
+                "respuestaGenIA",
+                "respuesta_gen_ia",
+                "generatedAnswer",
+                default="",
+            ) or ""
+
             with st.form("form_resolve_pending"):
                 pending_usuario = st.text_input("Usuario", value="admin")
                 pending_estado = st.selectbox("Estado", ["respondida", "cancelada"])
-                pending_respuesta_final = st.text_area("Respuesta final (si respondida)")
+                pending_respuesta_final = st.text_area(
+                    "Respuesta final (si respondida)",
+                    value=pending_generated_answer,
+                )
                 pending_observaciones = st.text_area("Observaciones")
                 submit_pending = st.form_submit_button("Guardar resolucion")
 
@@ -923,9 +942,15 @@ with tab2:
                         }
                         response = api_request("PUT", f"/kb/unanswered-questions/{pending_id}/response", json=payload)
                         if response and response.status_code == 200:
-                            st.success("Pendiente actualizado")
-                            st.json(response.json())
-                            st.rerun()
+                            resolved_payload = response.json() or {}
+                            st.session_state.pending_questions = [
+                                item
+                                for item in st.session_state.get("pending_questions", [])
+                                if item.get("id") != pending_id
+                            ]
+                            resolved_text = resolved_payload.get("message") or "Pendiente actualizado"
+                            st.session_state.pending_resolution_message = resolved_text
+                            st.session_state.select_pending_question = ""
                         elif response:
                             render_error_response(response)
         else:
