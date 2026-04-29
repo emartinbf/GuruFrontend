@@ -2221,21 +2221,6 @@ with tab6:
                 st.info("No hay información de support en la última corrida.")
 
             by_category = latest_run.get("byCategory", {}) or {}
-            if by_category:
-                st.markdown("---")
-                st.markdown("**Por categoría**")
-                category_rows = []
-                for cat_name, cat_data in by_category.items():
-                    category_rows.append(
-                        {
-                            "Categoria": cat_name,
-                            "Support": int(cat_data.get("support", cat_data.get("totalTests", 0)) or 0),
-                            "Accuracy": to_float(cat_data.get("passRate", cat_data.get("accuracy", 0))),
-                            "Precision": to_float(cat_data.get("precision", 0)),
-                            "Recall": to_float(cat_data.get("recall", 0)),
-                        }
-                    )
-                st.dataframe(category_rows, use_container_width=True)
 
             # Los datos de ejecución vienen dentro de detailedReport (MLMetrics/calculate)
             # o directamente en la raíz (testing/run-golden-dataset legacy).
@@ -2276,24 +2261,32 @@ with tab6:
                     st.metric("Respuestas Inactivas", int(gr.get("inactiveAnswersReturned", 0) or 0))
 
                 golden_by_cat = gr.get("byCategory", {}) or {}
-                if golden_by_cat:
-                    golden_category_rows = []
-                    for cat_name, cat_metrics in golden_by_cat.items():
-                        golden_category_rows.append(
+                all_cats = sorted(set(list(by_category.keys()) + list(golden_by_cat.keys())))
+                if all_cats:
+                    unified_rows = []
+                    for cat in all_cats:
+                        root_d  = by_category.get(cat, {})
+                        detail_d = golden_by_cat.get(cat, {})
+                        unified_rows.append(
                             {
-                                "Categoría": cat_name,
-                                "Passed": int(cat_metrics.get("passed", 0) or 0),
-                                "Failed": int(cat_metrics.get("failed", 0) or 0),
-                                "Pass Rate (%)": to_float(cat_metrics.get("passRate", 0)) * 100,
-                                "Score Promedio": to_float(cat_metrics.get("averageScore", 0)),
+                                "Categoría": cat,
+                                "Support": int(root_d.get("support", detail_d.get("totalTests", 0)) or 0),
+                                "Passed": int(detail_d.get("passed", 0) or 0),
+                                "Failed": int(detail_d.get("failed", 0) or 0),
+                                "Accuracy": to_float(root_d.get("accuracy", root_d.get("passRate", 0))),
+                                "Precision": to_float(root_d.get("precision", 0)),
+                                "Recall": to_float(root_d.get("recall", 0)),
+                                "Pass Rate (%)": to_float(detail_d.get("passRate", root_d.get("passRate", 0))) * 100,
+                                "Score Promedio": to_float(detail_d.get("averageScore", root_d.get("averageScore", 0))),
                             }
                         )
-                    if any(row["Passed"] > 0 or row["Failed"] > 0 for row in golden_category_rows):
-                        st.markdown("---")
-                        st.subheader("Resultados por categoría")
-                        st.dataframe(golden_category_rows, use_container_width=True)
+                    st.markdown("---")
+                    st.subheader("Por categoría")
+                    st.dataframe(unified_rows, use_container_width=True)
+                    chart_data = [{"Categoría": r["Categoría"], "Passed": r["Passed"], "Failed": r["Failed"]} for r in unified_rows if r["Passed"] > 0 or r["Failed"] > 0]
+                    if chart_data:
                         st.bar_chart(
-                            [{"Categoría": r["Categoría"], "Passed": r["Passed"], "Failed": r["Failed"]} for r in golden_category_rows],
+                            chart_data,
                             x="Categoría",
                             y=["Passed", "Failed"],
                             use_container_width=True,
