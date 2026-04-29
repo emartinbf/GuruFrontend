@@ -15,13 +15,27 @@ CLOUD_API_URL_DEFAULT = "https://poc-guru-hdf0gvb2a2f4ehgf.eastus-01.azurewebsit
 
 
 def is_streamlit_cloud() -> bool:
-    # Streamlit Community Cloud sets this marker.
-    return os.getenv("STREAMLIT_SHARING_MODE", "").lower() == "community"
+    # Streamlit Cloud markers can vary by runtime; support common alternatives.
+    sharing_mode = os.getenv("STREAMLIT_SHARING_MODE", "").strip().lower()
+    if sharing_mode in ("community", "cloud"):
+        return True
+
+    cloud_markers = [
+        os.getenv("IS_STREAMLIT_CLOUD", ""),
+        os.getenv("STREAMLIT_RUNTIME", ""),
+        os.getenv("STREAMLIT_ENV", ""),
+    ]
+    return any(str(marker).strip().lower() in ("1", "true", "yes", "cloud") for marker in cloud_markers)
 
 
-if is_streamlit_cloud():
+configured_api_url = os.getenv("API_URL") or st.secrets.get("api_url")
+
+if configured_api_url:
+    API_URL = configured_api_url
+    RUNTIME_ENV = "Cloud" if is_streamlit_cloud() else "Configured"
+elif is_streamlit_cloud():
     RUNTIME_ENV = "Cloud"
-    API_URL = st.secrets.get("api_url") or os.getenv("API_URL") or CLOUD_API_URL_DEFAULT
+    API_URL = CLOUD_API_URL_DEFAULT
 else:
     RUNTIME_ENV = "Local"
     API_URL = LOCAL_API_URL
