@@ -535,6 +535,13 @@ with tab2:
 
         if "preguntas" not in st.session_state:
             st.session_state.preguntas = []
+        if "kb_pregunta_edit_message" not in st.session_state:
+            st.session_state.kb_pregunta_edit_message = None
+
+        kb_pregunta_edit_message = st.session_state.get("kb_pregunta_edit_message")
+        if kb_pregunta_edit_message:
+            st.success(kb_pregunta_edit_message)
+            st.session_state.kb_pregunta_edit_message = None
 
         if st.button("Listar todas las preguntas", key="btn_list_all_preguntas"):
             response = api_request("GET", "/kb/preguntas")
@@ -604,6 +611,8 @@ with tab2:
 
         st.markdown("---")
         st.markdown("**Editar pregunta**")
+        if st.session_state.pop("clear_edit_pregunta_next_run", False):
+            st.session_state["select_edit_pregunta"] = ""
         pregunta_options = st.session_state.get("preguntas", [])
         pregunta_map = {
             f"{p.get('id')} - {p.get('texto', '')[:80]}": p
@@ -660,10 +669,21 @@ with tab2:
                             }
                             response = api_request("PUT", f"/kb/preguntas/{selected_pregunta_id}", json=payload)
                             if response and response.status_code == 200:
-                                st.success("Pregunta actualizada")
-                                st.rerun()
+                                refreshed_preguntas = api_request("GET", "/kb/preguntas")
+                                if refreshed_preguntas and refreshed_preguntas.status_code == 200:
+                                    st.session_state.preguntas = refreshed_preguntas.json() or []
+                                    st.session_state.kb_pregunta_edit_message = "Pregunta actualizada"
+                                    st.session_state["clear_edit_pregunta_next_run"] = True
+                                    st.rerun()
+                                elif refreshed_preguntas:
+                                    render_error_response(refreshed_preguntas)
+                                    st.error("La pregunta se actualizó, pero falló la recarga del listado.")
+                                else:
+                                    st.error("La pregunta se actualizó, pero no se pudo refrescar la lista.")
                             elif response:
                                 render_error_response(response)
+                            else:
+                                st.error("No se pudo actualizar la pregunta (sin respuesta del backend).")
 
         st.markdown("---")
         st.markdown("**Eliminar pregunta**")
@@ -689,6 +709,13 @@ with tab2:
 
         if "respuestas" not in st.session_state:
             st.session_state.respuestas = []
+        if "kb_respuesta_edit_message" not in st.session_state:
+            st.session_state.kb_respuesta_edit_message = None
+
+        kb_respuesta_edit_message = st.session_state.get("kb_respuesta_edit_message")
+        if kb_respuesta_edit_message:
+            st.success(kb_respuesta_edit_message)
+            st.session_state.kb_respuesta_edit_message = None
 
         if st.button("Listar todas las respuestas", key="btn_list_all_respuestas"):
             response = api_request("GET", "/kb/respuestas")
@@ -741,6 +768,8 @@ with tab2:
 
         st.markdown("---")
         st.markdown("**Editar respuesta**")
+        if st.session_state.pop("clear_edit_respuesta_next_run", False):
+            st.session_state["select_edit_respuesta"] = ""
         respuesta_options = st.session_state.get("respuestas", [])
         respuesta_map = {
             f"{r.get('id')} [{r.get('answerKey', 'N/A')}] - {r.get('texto', '')[:60]}": r
@@ -775,15 +804,26 @@ with tab2:
                     response = api_request("PUT", f"/kb/respuestas/{selected_respuesta_id}", json=payload)
                     if response and response.status_code == 200:
                         result = response.json()
-                        if result.get("message") == "Nueva version creada":
-                            st.success(f"Nueva versión creada - ID: {result.get('nuevaRespuestaId')}")
-                            st.info(f"AnswerKey se mantuvo: {default_respuesta_answer_key}")
-                            st.json(result)
+                        refreshed_respuestas = api_request("GET", "/kb/respuestas")
+                        if refreshed_respuestas and refreshed_respuestas.status_code == 200:
+                            refreshed_payload = refreshed_respuestas.json() or []
+                            st.session_state.respuestas = refreshed_payload
+                            st.session_state.respuestas_catalog = refreshed_payload
+                            if result.get("message") == "Nueva version creada":
+                                st.session_state.kb_respuesta_edit_message = f"Nueva versión creada - ID: {result.get('nuevaRespuestaId')}"
+                            else:
+                                st.session_state.kb_respuesta_edit_message = "Respuesta actualizada"
+                            st.session_state["clear_edit_respuesta_next_run"] = True
+                            st.rerun()
+                        elif refreshed_respuestas:
+                            render_error_response(refreshed_respuestas)
+                            st.error("La respuesta se actualizó, pero falló la recarga del listado.")
                         else:
-                            st.success("Respuesta actualizada")
-                        st.rerun()
+                            st.error("La respuesta se actualizó, pero no se pudo refrescar la lista.")
                     elif response:
                         render_error_response(response)
+                    else:
+                        st.error("No se pudo actualizar la respuesta (sin respuesta del backend).")
 
         st.markdown("---")
         st.markdown("**Eliminar respuesta**")
