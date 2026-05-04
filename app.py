@@ -383,13 +383,14 @@ def build_feedback_tracking_key(query_history_id=None, query_hash=None, original
 st.title("Galicia Guru - Sistema de Conocimiento")
 st.markdown("---")
 
-tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
     "Busqueda",
     "Base Conocimiento",
     "Documentos",
+    "Dashboard",
     "Metricas",
     "Testing",
-    "Dashboard QA",
+    "Auditoría de respuestas",
     "Regression DataSet",
 ])
 
@@ -428,25 +429,7 @@ with tab1:
         if result["type"] == "ok":
             data = result["data"]
             debug_data = data.get('debug', {})
-            st.success("Respuesta encontrada")
-            st.info(data['answer'])
-
-            with st.expander("Ver detalle del resultado"):
-                detail_col1, detail_col2, detail_col3 = st.columns(3)
-                with detail_col1:
-                    st.write("**Answer ID:**", data.get("answerId") or "N/A")
-                    st.write("**Version:**", data.get("version") or "N/A")
-                with detail_col2:
-                    st.write("**Score:**", data.get("score") if data.get("score") is not None else "N/A")
-                    st.write("**Query Hash:**", debug_data.get("queryHash") or "N/A")
-                    st.write("**QueryHistoryId:**", data.get("queryHistoryId") or "N/A")
-                with detail_col3:
-                    st.write("**Query original:**", debug_data.get("originalQuery") or data.get("query") or "N/A")
-                    st.write("**Cache Hit:**", debug_data.get("cacheHit") if debug_data.get("cacheHit") is not None else "N/A")
-
-                if debug_data:
-                    st.markdown("**Debug payload**")
-                    st.json(debug_data)
+            st.success(data['answer'])
             
             # ✅ BOTONES DE FEEDBACK
             st.markdown("---")
@@ -519,9 +502,34 @@ with tab1:
                             st.error("Error enviando feedback")
 
             st.markdown("---")
+            with st.expander("Ver detalle del resultado"):
+                detail_col1, detail_col2, detail_col3 = st.columns(3)
+                with detail_col1:
+                    st.write("**Answer ID:**", data.get("answerId") or "N/A")
+                    st.write("**Version:**", data.get("version") or "N/A")
+                    st.write("**Threshold:**", data.get("threshold") if data.get("threshold") is not None else "N/A")
+                with detail_col2:
+                    st.write("**Score:**", data.get("score") if data.get("score") is not None else "N/A")
+                    st.write("**Latency (ms):**", data.get("latencyMs") if data.get("latencyMs") is not None else "N/A")
+                    st.write("**Cache Hit:**", "Sí" if data.get("cacheHit") else "No")
+                with detail_col3:
+                    st.write("**Query Hash:**", debug_data.get("queryHash") or "N/A")
+                    st.write("**QueryHistoryId:**", data.get("queryHistoryId") or "N/A")
+                    st.write("**Idioma detectado:**", debug_data.get("detectedLanguage") or "N/A")
+
+                st.markdown("---")
+                st.markdown("**Query**")
+                st.write("**Original:**", debug_data.get("originalQuery") or data.get("query") or "N/A")
+                st.write("**Procesada:**", debug_data.get("processedQuery") or "N/A")
+                st.write("**Modificada:**", "Sí" if debug_data.get("wasModified") else "No")
+
+                if debug_data:
+                    st.markdown("---")
+                    st.markdown("**Debug completo**")
+                    st.json(debug_data)
         elif result["type"] == "no_answer":
             st.warning(result["msg"])
-            st.info("La pregunta se guardo para revision")
+            st.info("La pregunta se guardó para revisión")
         elif result["type"] == "error":
             st.error(f"Error {result['code']}: {result['text']}")
 
@@ -537,11 +545,22 @@ with tab2:
             st.session_state.preguntas = []
         if "kb_pregunta_edit_message" not in st.session_state:
             st.session_state.kb_pregunta_edit_message = None
+        if "preguntas_auto_loaded" not in st.session_state:
+            st.session_state.preguntas_auto_loaded = False
 
         kb_pregunta_edit_message = st.session_state.get("kb_pregunta_edit_message")
         if kb_pregunta_edit_message:
             st.success(kb_pregunta_edit_message)
             st.session_state.kb_pregunta_edit_message = None
+
+        # Auto-load preguntas on first entry
+        if not st.session_state.preguntas_auto_loaded:
+            response = api_request("GET", "/kb/preguntas")
+            if response and response.status_code == 200:
+                st.session_state.preguntas = response.json()
+                st.session_state.preguntas_auto_loaded = True
+            elif response:
+                render_error_response(response)
 
         if st.button("Listar todas las preguntas", key="btn_list_all_preguntas"):
             response = api_request("GET", "/kb/preguntas")
@@ -711,11 +730,23 @@ with tab2:
             st.session_state.respuestas = []
         if "kb_respuesta_edit_message" not in st.session_state:
             st.session_state.kb_respuesta_edit_message = None
+        if "respuestas_auto_loaded" not in st.session_state:
+            st.session_state.respuestas_auto_loaded = False
 
         kb_respuesta_edit_message = st.session_state.get("kb_respuesta_edit_message")
         if kb_respuesta_edit_message:
             st.success(kb_respuesta_edit_message)
             st.session_state.kb_respuesta_edit_message = None
+
+        # Auto-load respuestas on first entry
+        if not st.session_state.respuestas_auto_loaded:
+            response = api_request("GET", "/kb/respuestas")
+            if response and response.status_code == 200:
+                st.session_state.respuestas = response.json()
+                st.session_state.respuestas_catalog = response.json()
+                st.session_state.respuestas_auto_loaded = True
+            elif response:
+                render_error_response(response)
 
         if st.button("Listar todas las respuestas", key="btn_list_all_respuestas"):
             response = api_request("GET", "/kb/respuestas")
@@ -933,14 +964,25 @@ with tab2:
             st.session_state.pending_questions = []
         if "pending_resolution_message" not in st.session_state:
             st.session_state.pending_resolution_message = None
+        if "pending_questions_auto_loaded" not in st.session_state:
+            st.session_state.pending_questions_auto_loaded = False
 
         pending_resolution_message = st.session_state.get("pending_resolution_message")
         if pending_resolution_message:
             st.success(pending_resolution_message)
             st.session_state.pending_resolution_message = None
 
+        # Auto-load pending questions on first entry
+        if not st.session_state.pending_questions_auto_loaded:
+            response = api_request("GET", "/kb/unanswered-questions/pending", params={"limit": 20})
+            if response and response.status_code == 200:
+                st.session_state.pending_questions = response.json()
+                st.session_state.pending_questions_auto_loaded = True
+            elif response:
+                render_error_response(response)
+
         if st.button("Ver pendientes", key="btn_pending_questions"):
-            response = api_request("GET", "/kb/unanswered-questions/pending")
+            response = api_request("GET", "/kb/unanswered-questions/pending", params={"limit": 20})
             if response and response.status_code == 200:
                 st.session_state.pending_questions = response.json()
                 st.success(f"{len(st.session_state.pending_questions)} pendientes")
@@ -1015,6 +1057,8 @@ with tab3:
     
     if "documentos" not in st.session_state:
         st.session_state.documentos = []
+    if "documentos_auto_loaded" not in st.session_state:
+        st.session_state.documentos_auto_loaded = False
     
     uploaded_file = st.file_uploader("Subir PDF/Word", type=['pdf', 'docx'])
     
@@ -1030,8 +1074,18 @@ with tab3:
                 st.write(f"Paginas: {result['totalPages']}")
                 st.write(f"Tiempo: {result['processingTimeMs']}ms")
                 st.session_state.documentos = []
+                st.session_state.documentos_auto_loaded = False
             elif response:
                 render_error_response(response)
+    
+    # Auto-load documentos on first entry
+    if not st.session_state.documentos_auto_loaded:
+        response = api_request("GET", "/documents")
+        if response and response.status_code == 200:
+            st.session_state.documentos = response.json()
+            st.session_state.documentos_auto_loaded = True
+        elif response:
+            render_error_response(response)
     
     if st.button("Listar Documentos"):
         response = api_request("GET", "/documents")
@@ -1058,7 +1112,7 @@ with tab3:
                     elif del_resp:
                         render_error_response(del_resp)
 
-with tab4:
+with tab5:
     st.header("Metricas de Busqueda")
 
     if "metrics_payload" not in st.session_state:
@@ -1265,7 +1319,7 @@ with tab4:
                     use_container_width=True
                 )
 
-with tab5:
+with tab6:
     st.header("Testing")
 
     if "golden_report" not in st.session_state:
@@ -1974,9 +2028,9 @@ with tab5:
                             if failure.get("suggestedImprovement"):
                                 st.warning(f"Mejora sugerida: {failure.get('suggestedImprovement')}")
 
-with tab6:
-    st.header("Dashboard QA y Negocio")
-    st.caption("Vista unificada para monitoreo operativo, calidad del modelo y QA manual.")
+with tab4:
+    st.header("Dashboard")
+    st.caption("Vista unificada para monitoreo operativo y calidad del modelo.")
 
     if "ops_dashboard" not in st.session_state:
         st.session_state.ops_dashboard = {}
@@ -1985,10 +2039,9 @@ with tab6:
     if "qa_candidates" not in st.session_state:
         st.session_state.qa_candidates = []
 
-    dash_tab1, dash_tab2, dash_tab3 = st.tabs([
+    dash_tab1, dash_tab2 = st.tabs([
         "🟦 Métricas Operativas",
         "🟩 Calidad",
-        "🧠 QA Manual",
     ])
 
     with dash_tab1:
@@ -2394,9 +2447,18 @@ with tab6:
                 elif total_tests > 0:
                     st.success("Todos los tests pasaron")
 
-    with dash_tab3:
-        st.subheader("QA Manual")
-        st.caption("Casos candidatos: preguntas ordenadas por menor confidence para revisión rápida.")
+with tab7:
+    st.subheader("Auditoría de respuestas")
+    st.caption("Casos candidatos: preguntas ordenadas por menor confidence para revisión rápida.")
+
+    if "qa_candidates" not in st.session_state:
+        st.session_state.qa_candidates = []
+    if "qa_auto_loaded" not in st.session_state:
+        st.session_state.qa_auto_loaded = False
+    if "qa_save_message" not in st.session_state:
+        st.session_state.qa_save_message = None
+
+    with st.container():
 
         qa_save_message = st.session_state.get("qa_save_message")
         if qa_save_message:
@@ -2410,6 +2472,60 @@ with tab6:
             st.write("")
             st.write("")
             run_generate_qa = st.button("Generar lista QA", type="primary", key="btn_generate_qa")
+
+        # Auto-load qa candidates on first entry
+        if not st.session_state.qa_auto_loaded:
+            with st.spinner(f"Cargando lista automática de {qa_limit} preguntas..."):
+                pending_response = api_request("GET", "/qa/pending-reviews", params={"limit": int(qa_limit)})
+                if pending_response and pending_response.status_code == 200:
+                    pending_payload = pending_response.json() or {}
+                    pending_reviews = (
+                        pending_payload.get("reviews")
+                        if isinstance(pending_payload, dict)
+                        else pending_payload
+                    ) or []
+                    candidates = []
+                    for review in pending_reviews:
+                        normalized_review = normalize_recent_item(review)
+                        top3 = normalize_top_results(
+                            review.get("topResults")
+                            or review.get("top_results")
+                            or review.get("top3Alternatives")
+                            or []
+                        )
+                        predicted = top3[0] if top3 else {
+                            "answerId": normalized_review.get("answerId"),
+                            "answerText": normalized_review.get("answerText") or "",
+                        }
+                        candidates.append(
+                            {
+                                "query": normalized_review.get("originalQuery") or normalized_review.get("query") or "",
+                                "queryHistoryId": normalized_review.get("queryHistoryId") or review.get("queryHistoryId"),
+                                "queryHash": normalized_review.get("queryHash") or review.get("queryHash", ""),
+                                "version": normalized_review.get("version") or review.get("version"),
+                                "timestamp": normalized_review.get("timestamp") or review.get("timestamp"),
+                                "confidence": to_float(
+                                    normalized_review.get("score", review.get("predictedScore", 0)),
+                                    default=0.0,
+                                ),
+                                "predictedAnswerId": (
+                                    predicted.get("respuestaId")
+                                    or predicted.get("answerId")
+                                    or normalized_review.get("answerId")
+                                ),
+                                "predictedAnswerText": (
+                                    predicted.get("textoRespuesta")
+                                    or predicted.get("answerText")
+                                    or normalized_review.get("answerText")
+                                    or ""
+                                ),
+                                "top3": top3,
+                            }
+                        )
+                    st.session_state.qa_candidates = candidates
+                    st.session_state.qa_auto_loaded = True
+                elif pending_response:
+                    render_error_response(pending_response)
 
         if run_generate_qa:
             with st.spinner(f"Armando lista automática de {qa_limit} preguntas..."):
@@ -2634,12 +2750,30 @@ with tab6:
 
                             st.caption("Regresión: gestionada automáticamente por el backend.")
 
-with tab7:
+with tab8:
     st.header("Regression DataSet")
     st.caption("Listado y desactivación de entradas. Alta y edición no disponibles por ahora.")
 
     if "regression_entries_payload" not in st.session_state:
         st.session_state.regression_entries_payload = {"total": 0, "entries": []}
+    if "regression_auto_loaded" not in st.session_state:
+        st.session_state.regression_auto_loaded = False
+
+    # Auto-load regression entries on first entry
+    if not st.session_state.regression_auto_loaded:
+        response = api_request("GET", "/Regression/entries")
+        if response and response.status_code == 200:
+            payload = response.json() or {}
+            entries = payload.get("entries") if isinstance(payload, dict) else payload
+            entries = entries or []
+            total = payload.get("total", len(entries)) if isinstance(payload, dict) else len(entries)
+            st.session_state.regression_entries_payload = {
+                "total": int(total),
+                "entries": entries,
+            }
+            st.session_state.regression_auto_loaded = True
+        elif response:
+            render_error_response(response)
 
     if st.button("Cargar Regression DataSet", type="primary", key="btn_load_regression_entries"):
         response = api_request("GET", "/Regression/entries")
