@@ -221,19 +221,90 @@ def parse_iso_datetime(raw_value):
         return None
 
 
-def build_requests_per_minute(recent_items):
+def build_requests_per_hour(recent_items):
     bucket = {}
     for item in recent_items or []:
         ts = parse_iso_datetime(item.get("timestamp"))
         if not ts:
             continue
-        minute_key = ts.replace(second=0, microsecond=0).isoformat()
-        bucket[minute_key] = bucket.get(minute_key, 0) + 1
+        hour_key = ts.replace(minute=0, second=0, microsecond=0).isoformat()
+        bucket[hour_key] = bucket.get(hour_key, 0) + 1
 
     return [
-        {"minute": minute_key, "requests": qty}
-        for minute_key, qty in sorted(bucket.items(), key=lambda kv: kv[0])
+        {"hour": hour_key, "requests": qty}
+        for hour_key, qty in sorted(bucket.items(), key=lambda kv: kv[0])
     ]
+
+
+def build_cache_accumulated_by_day(recent_items):
+    bucket = {}
+    for item in recent_items or []:
+        ts = parse_iso_datetime(item.get("timestamp"))
+        if not ts:
+            continue
+        day_key = ts.date().isoformat()
+        day_bucket = bucket.setdefault(day_key, {"cache": 0, "no_cache": 0})
+        if item.get("cacheHit", False):
+            day_bucket["cache"] += 1
+        else:
+            day_bucket["no_cache"] += 1
+
+    cache_accumulated = 0
+    no_cache_accumulated = 0
+    series = []
+    for day_key in sorted(bucket.keys()):
+        cache_accumulated += bucket[day_key]["cache"]
+        no_cache_accumulated += bucket[day_key]["no_cache"]
+        series.append(
+            {
+                "day": day_key,
+                "Con cache": cache_accumulated,
+                "Sin cache": no_cache_accumulated,
+            }
+        )
+
+    return series
+
+
+def build_latency_average_by_day(recent_items):
+    bucket = {}
+    for item in recent_items or []:
+        ts = parse_iso_datetime(item.get("timestamp"))
+        if not ts:
+            continue
+        day_key = ts.date().isoformat()
+        day_bucket = bucket.setdefault(
+            day_key,
+            {
+                "cache_sum": 0.0,
+                "cache_count": 0,
+                "no_cache_sum": 0.0,
+                "no_cache_count": 0,
+            },
+        )
+        latency_value = float(item.get("totalLatencyMs", 0) or 0)
+
+        if item.get("cacheHit", False):
+            day_bucket["cache_sum"] += latency_value
+            day_bucket["cache_count"] += 1
+        else:
+            day_bucket["no_cache_sum"] += latency_value
+            day_bucket["no_cache_count"] += 1
+
+    series = []
+    for day_key in sorted(bucket.keys()):
+        day_bucket = bucket[day_key]
+        avg_cache = day_bucket["cache_sum"] / day_bucket["cache_count"] if day_bucket["cache_count"] > 0 else 0
+        avg_no_cache = day_bucket["no_cache_sum"] / day_bucket["no_cache_count"] if day_bucket["no_cache_count"] > 0 else 0
+        series.append(
+            {
+                "day": day_key,
+                "Latencia con cache": avg_cache,
+                "Latencia sin cache": avg_no_cache,
+            }
+        )
+
+    return series
 
 
 def post_with_fallback(paths, **kwargs):
@@ -2076,8 +2147,23 @@ with tab3:
             avg_latency = to_float(latency_info.get("averageMs", ops_summary.get("averageLatencyMs", 0)))
             avg_score = to_float(accuracy_info.get("averageScore", ops_summary.get("averageScore", 0)))
 
-            rpm_series = build_requests_per_minute(ops_recent)
-            peak_rpm = max((row.get("requests", 0) for row in rpm_series), default=0)
+            hourly_requests_series = build_requests_per_hour(ops_recent)
+            latency_hourly_series_map = {}
+            for item in ops_recent:
+                ts = parse_iso_datetime(item.get("timestamp"))
+                if not ts:
+                    continue
+                hour_key = ts.replace(minute=0, second=0, microsecond=0).isoformat()
+                latency_hourly_series_map.setdefault(hour_key, []).append(to_float(item.get("totalLatencyMs", 0)))
+            latency_hourly_series = [
+                {
+                    "hour": hour_key,
+                    "latencyMs": (sum(values) / len(values)) if values else 0,
+                }
+                for hour_key, values in sorted(latency_hourly_series_map.items(), key=lambda kv: kv[0])
+            ]
+
+            peak_rpm = max((row.get("requests", 0) for row in hourly_requests_series), default=0)
 
             k1, k2, k3, k4, k5 = st.columns(5)
             with k1:
@@ -2087,9 +2173,82 @@ with tab3:
             with k3:
                 st.metric("Cache hit ratio", f"{hit_ratio * 100:.2f}%")
             with k4:
-                st.metric("Peak requests/min", int(peak_rpm))
+                st.metric("Peak requests/hora", int(peak_rpm))
             with k5:
                 st.metric("Score promedio", f"{avg_score:.4f}")
+
+            st.markdown("---")
+            st.markdown("**Distribución de resultados**")
+            result_distribution = ops_distribution.get("resultado", ops_summary.get("resultadoDistribution", {}))
+            if result_distribution:
+                distribution_rows = []
+                distribution_totals = {"below_match": 0.0, "match": 0.0, "no_match": 0.0}
+                normalized_result_aliases = {
+                    "below_threshold": "below_match",
+                }
+                label_map = {
+                    "below_match": "below_threshold",
+                    "match": "match",
+                    "no_match": "no match",
+                }
+
+                for key, val in result_distribution.items():
+                    normalized_key = str(key).strip().lower().replace(" ", "_").replace("-", "_")
+                    normalized_key = normalized_result_aliases.get(normalized_key, normalized_key)
+                    quantity = to_float(val)
+                    distribution_rows.append(
+                        {
+                            "Resultado": label_map.get(normalized_key, str(key)),
+                            "ResultadoKey": normalized_key,
+                            "Cantidad": quantity,
+                        }
+                    )
+                    if normalized_key in distribution_totals:
+                        distribution_totals[normalized_key] += quantity
+
+                chart_rows = [row for row in distribution_rows if row.get("Cantidad", 0) > 0]
+
+                if chart_rows:
+                    st.vega_lite_chart(
+                        chart_rows,
+                        {
+                            "mark": {"type": "arc", "innerRadius": 50},
+                            "encoding": {
+                                "theta": {"field": "Cantidad", "type": "quantitative"},
+                                "color": {
+                                    "field": "ResultadoKey",
+                                    "type": "nominal",
+                                    "scale": {
+                                        "domain": ["below_match", "match", "no_match"],
+                                        "range": ["#f59e0b", "#2563eb", "#dc2626"],
+                                    },
+                                    "legend": {
+                                        "title": "Resultado",
+                                        "labelExpr": "datum.label === 'below_match' ? 'below_threshold' : datum.label",
+                                    },
+                                },
+                                "tooltip": [
+                                    {"field": "Resultado", "type": "nominal"},
+                                    {"field": "Cantidad", "type": "quantitative"},
+                                ],
+                            },
+                        },
+                        use_container_width=True,
+                    )
+                else:
+                    st.info("Sin datos positivos para graficar distribución.")
+
+                st.caption(
+                    " | ".join(
+                        [
+                            f"below_threshold: {int(distribution_totals['below_match'])}",
+                            f"match: {int(distribution_totals['match'])}",
+                            f"no_match: {int(distribution_totals['no_match'])}",
+                        ]
+                    )
+                )
+            else:
+                st.info("Sin datos de distribución.")
 
             if ops_feedback_stats:
                 st.markdown("---")
@@ -2103,29 +2262,6 @@ with tab3:
                     st.metric("👎 Negativos", int(ops_feedback_stats.get("negativeFeedbacks", 0)))
                 with f4:
                     st.metric("Tasa positiva", f"{float(ops_feedback_stats.get('positiveRate', 0)):.1%}")
-
-            st.markdown("---")
-            c1, c2 = st.columns(2)
-            with c1:
-                st.markdown("**Requests por minuto**")
-                if rpm_series:
-                    st.line_chart(rpm_series, x="minute", y="requests", use_container_width=True)
-                else:
-                    st.info("Sin datos suficientes para requests por minuto.")
-
-            with c2:
-                st.markdown("**Latencia reciente**")
-                latency_series = [
-                    {
-                        "timestamp": item.get("timestamp"),
-                        "latencyMs": to_float(item.get("totalLatencyMs", 0)),
-                    }
-                    for item in sorted(ops_recent, key=lambda x: x.get("timestamp", ""))
-                ]
-                if latency_series:
-                    st.line_chart(latency_series, x="timestamp", y="latencyMs", use_container_width=True)
-                else:
-                    st.info("Sin datos recientes para latencia.")
 
             if ops_recent_debug:
                 st.caption(
@@ -2152,84 +2288,40 @@ with tab3:
             st.bar_chart(component_rows, x="Componente", y="LatencyMs", use_container_width=True)
 
             st.markdown("---")
-            st.markdown("**Distribución de resultados**")
-            result_distribution = ops_distribution.get("resultado", ops_summary.get("resultadoDistribution", {}))
-            if result_distribution:
-                distribution_rows = [
-                    {"Resultado": key, "Cantidad": to_float(val)} for key, val in result_distribution.items()
-                ]
-                st.bar_chart(
-                    distribution_rows,
-                    x="Resultado",
-                    y="Cantidad",
-                    use_container_width=True,
-                )
-            else:
-                st.info("Sin datos de distribución.")
+            c1, c2 = st.columns(2)
+            with c1:
+                st.markdown("**Requests por hora**")
+                if hourly_requests_series:
+                    st.line_chart(hourly_requests_series, x="hour", y="requests", use_container_width=True)
+                else:
+                    st.info("Sin datos suficientes para requests por hora.")
+
+            with c2:
+                st.markdown("**Latencia reciente (por hora)**")
+                if latency_hourly_series:
+                    st.line_chart(latency_hourly_series, x="hour", y="latencyMs", use_container_width=True)
+                else:
+                    st.info("Sin datos recientes para latencia por hora.")
 
             if ops_recent:
                 st.markdown("---")
-                ops_recent_sorted = sorted(ops_recent, key=lambda x: x.get("timestamp", ""))
-                
-                st.markdown("**Requests acumulados: con cache vs sin cache**")
-                cache_accumulated = 0
-                no_cache_accumulated = 0
-                cache_vs_no_cache_series = []
-
-                for item in ops_recent_sorted:
-                    if item.get("cacheHit", False):
-                        cache_accumulated += 1
-                    else:
-                        no_cache_accumulated += 1
-
-                    cache_vs_no_cache_series.append(
-                        {
-                            "timestamp": item.get("timestamp"),
-                            "Con cache": cache_accumulated,
-                            "Sin cache": no_cache_accumulated
-                        }
-                    )
+                st.markdown("**Requests acumulados: con cache vs sin cache (por día)**")
+                cache_vs_no_cache_series = build_cache_accumulated_by_day(ops_recent)
 
                 st.line_chart(
                     cache_vs_no_cache_series,
-                    x="timestamp",
+                    x="day",
                     y=["Con cache", "Sin cache"],
                     use_container_width=True
                 )
 
                 st.markdown("---")
-                st.markdown("**Tendencia de latencia promedio (con/sin cache)**")
-                latency_by_cache_series = []
-                cache_latency_sum = 0.0
-                cache_latency_count = 0
-                no_cache_latency_sum = 0.0
-                no_cache_latency_count = 0
-
-                for item in ops_recent_sorted:
-                    cache_hit = item.get("cacheHit", False)
-                    latency_value = float(item.get("totalLatencyMs", 0) or 0)
-
-                    if cache_hit:
-                        cache_latency_sum += latency_value
-                        cache_latency_count += 1
-                    else:
-                        no_cache_latency_sum += latency_value
-                        no_cache_latency_count += 1
-
-                    avg_cache_latency = cache_latency_sum / cache_latency_count if cache_latency_count > 0 else 0
-                    avg_no_cache_latency = no_cache_latency_sum / no_cache_latency_count if no_cache_latency_count > 0 else 0
-
-                    latency_by_cache_series.append(
-                        {
-                            "timestamp": item.get("timestamp"),
-                            "Latencia con cache": avg_cache_latency,
-                            "Latencia sin cache": avg_no_cache_latency
-                        }
-                    )
+                st.markdown("**Tendencia de latencia promedio (con/sin cache) por día**")
+                latency_by_cache_series = build_latency_average_by_day(ops_recent)
 
                 st.line_chart(
                     latency_by_cache_series,
-                    x="timestamp",
+                    x="day",
                     y=["Latencia con cache", "Latencia sin cache"],
                     use_container_width=True
                 )
@@ -2246,10 +2338,12 @@ with tab3:
                                 "score": item.get("score"),
                                 "latencyMs": item.get("totalLatencyMs")
                             }
-                            for item in ops_recent_sorted
+                            for item in sorted(ops_recent, key=lambda x: x.get("timestamp", ""))
                         ],
                         use_container_width=True
                     )
+            else:
+                st.info("Sin datos recientes para series temporales.")
 
     with dash_tab2:
         st.subheader("Calidad del Modelo")
