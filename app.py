@@ -603,194 +603,9 @@ with tab1:
 with tab2:
     st.header("Base de Conocimiento")
 
-    kb_tab1, kb_tab2, kb_tab3, kb_tab4 = st.tabs(["❓ Preguntas", "💡 Respuestas", "📄 Documentos", "📸 Snapshots"])
+    kb_tab1, kb_tab2, kb_tab3, kb_tab4 = st.tabs(["💡 Respuestas", "📄 Documentos", "❓ Preguntas", "📸 Snapshots"])
 
     with kb_tab1:
-        st.subheader("❓ Preguntas")
-
-        if "preguntas" not in st.session_state:
-            st.session_state.preguntas = []
-        if "kb_pregunta_edit_message" not in st.session_state:
-            st.session_state.kb_pregunta_edit_message = None
-        if "preguntas_auto_loaded" not in st.session_state:
-            st.session_state.preguntas_auto_loaded = False
-
-        kb_pregunta_edit_message = st.session_state.get("kb_pregunta_edit_message")
-        if kb_pregunta_edit_message:
-            st.success(kb_pregunta_edit_message)
-            st.session_state.kb_pregunta_edit_message = None
-
-        # Auto-load preguntas on first entry
-        if not st.session_state.preguntas_auto_loaded:
-            response = api_request("GET", "/kb/preguntas")
-            if response and response.status_code == 200:
-                st.session_state.preguntas = response.json()
-                st.session_state.preguntas_auto_loaded = True
-            elif response:
-                render_error_response(response)
-
-        if st.button("Listar todas las preguntas", key="btn_list_all_preguntas"):
-            response = api_request("GET", "/kb/preguntas")
-            if response and response.status_code == 200:
-                st.session_state.preguntas = response.json()
-                st.success(f"{len(st.session_state.preguntas)} preguntas activas")
-            elif response:
-                render_error_response(response)
-
-        respuestas_catalog = load_respuestas_catalog()
-        answer_key_by_respuesta_id = {
-            r.get("id"): r.get("answerKey")
-            for r in respuestas_catalog
-            if r.get("id")
-        }
-
-        if st.session_state.get("preguntas", []):
-            st.dataframe(
-                [
-                    {
-                        "id": p.get("id"),
-                        "texto": p.get("texto"),
-                        "respuestaId": p.get("respuestaId"),
-                        "answerKey": answer_key_by_respuesta_id.get(p.get("respuestaId"), "N/A"),
-                        "activa": p.get("activa")
-                    }
-                    for p in st.session_state.get("preguntas", [])
-                ],
-                use_container_width=True
-            )
-
-        st.markdown("---")
-        st.markdown("**Agregar pregunta**")
-        with st.form("form_add_pregunta"):
-            new_pregunta_texto = st.text_area("Texto pregunta")
-            col_add_1, col_add_2 = st.columns(2)
-            with col_add_1:
-                new_pregunta_respuesta_id = st.text_input("Respuesta ID (opcional)")
-            with col_add_2:
-                new_pregunta_answer_key = st.text_input(
-                    "Answer Key (opcional)",
-                    help="Si completás este campo, se resuelve automáticamente la respuesta por answerKey.",
-                )
-            new_pregunta_id_padre = st.text_input("ID Padre (opcional)")
-            add_pregunta = st.form_submit_button("Agregar pregunta")
-            if add_pregunta:
-                resolved_respuesta_id, resolution_error = resolve_respuesta_id(
-                    new_pregunta_respuesta_id,
-                    new_pregunta_answer_key,
-                )
-                if resolution_error:
-                    st.warning(resolution_error)
-                elif not resolved_respuesta_id:
-                    st.warning("Debes ingresar Respuesta ID o Answer Key")
-                else:
-                    payload = {
-                        "texto": new_pregunta_texto,
-                        "respuestaId": resolved_respuesta_id,
-                        "idPadre": new_pregunta_id_padre or None
-                    }
-                    response = api_request("POST", "/kb/preguntas", json=payload)
-                    if response and response.status_code == 200:
-                        st.success("Pregunta creada")
-                        st.rerun()
-                    elif response:
-                        render_error_response(response)
-
-        st.markdown("---")
-        st.markdown("**Editar pregunta**")
-        if st.session_state.pop("clear_edit_pregunta_next_run", False):
-            st.session_state["select_edit_pregunta"] = ""
-        pregunta_options = st.session_state.get("preguntas", [])
-        pregunta_map = {
-            f"{p.get('id')} - {p.get('texto', '')[:80]}": p
-            for p in pregunta_options
-        }
-        selected_pregunta_label = st.selectbox(
-            "Seleccionar pregunta",
-            [""] + list(pregunta_map.keys()),
-            key="select_edit_pregunta"
-        )
-
-        with st.form("form_edit_pregunta"):
-            default_pregunta_text = ""
-            default_pregunta_respuesta = ""
-            default_pregunta_answer_key = ""
-            selected_pregunta_id = ""
-
-            if selected_pregunta_label:
-                selected_pregunta = pregunta_map[selected_pregunta_label]
-                selected_pregunta_id = selected_pregunta.get("id", "")
-                default_pregunta_text = selected_pregunta.get("texto", "")
-                default_pregunta_respuesta = selected_pregunta.get("respuestaId", "")
-                default_pregunta_answer_key = answer_key_by_respuesta_id.get(default_pregunta_respuesta, "")
-
-            edit_pregunta_texto = st.text_area("Nuevo texto", value=default_pregunta_text)
-            col_edit_1, col_edit_2 = st.columns(2)
-            with col_edit_1:
-                edit_pregunta_respuesta = st.text_input(
-                    "Nuevo respuestaId (opcional)",
-                    value=default_pregunta_respuesta,
-                )
-            with col_edit_2:
-                edit_pregunta_answer_key = st.text_input(
-                    "Nuevo answerKey (opcional)",
-                    value=default_pregunta_answer_key,
-                )
-
-            edit_pregunta_submit = st.form_submit_button("Guardar cambios pregunta")
-
-            if edit_pregunta_submit:
-                if not selected_pregunta_id:
-                    st.warning("Primero lista y selecciona una pregunta")
-                else:
-                    resolved_respuesta_id, resolution_error = resolve_respuesta_id(
-                        edit_pregunta_respuesta,
-                        edit_pregunta_answer_key,
-                    )
-                    if resolution_error:
-                        st.warning(resolution_error)
-                    else:
-                            payload = {
-                                "texto": edit_pregunta_texto,
-                                "respuestaId": resolved_respuesta_id or None
-                            }
-                            response = api_request("PUT", f"/kb/preguntas/{selected_pregunta_id}", json=payload)
-                            if response and response.status_code == 200:
-                                refreshed_preguntas = api_request("GET", "/kb/preguntas")
-                                if refreshed_preguntas and refreshed_preguntas.status_code == 200:
-                                    st.session_state.preguntas = refreshed_preguntas.json() or []
-                                    st.session_state.kb_pregunta_edit_message = "Pregunta actualizada"
-                                    st.session_state["clear_edit_pregunta_next_run"] = True
-                                    st.rerun()
-                                elif refreshed_preguntas:
-                                    render_error_response(refreshed_preguntas)
-                                    st.error("La pregunta se actualizó, pero falló la recarga del listado.")
-                                else:
-                                    st.error("La pregunta se actualizó, pero no se pudo refrescar la lista.")
-                            elif response:
-                                render_error_response(response)
-                            else:
-                                st.error("No se pudo actualizar la pregunta (sin respuesta del backend).")
-
-        st.markdown("---")
-        st.markdown("**Eliminar pregunta**")
-        delete_pregunta_label = st.selectbox(
-            "Seleccionar pregunta a eliminar",
-            [""] + list(pregunta_map.keys()),
-            key="select_delete_pregunta"
-        )
-        if st.button("Eliminar pregunta", key="btn_delete_pregunta"):
-            if not delete_pregunta_label:
-                st.warning("Selecciona una pregunta")
-            else:
-                pregunta_id = pregunta_map[delete_pregunta_label].get("id")
-                response = api_request("DELETE", f"/kb/preguntas/{pregunta_id}")
-                if response and response.status_code == 200:
-                    st.success("Pregunta deshabilitada")
-                    st.rerun()
-                elif response:
-                    render_error_response(response)
-
-    with kb_tab2:
         st.subheader("💡 Respuestas")
 
         if "respuestas" not in st.session_state:
@@ -942,21 +757,21 @@ with tab2:
                 elif response:
                     render_error_response(response)
 
-    with kb_tab3:
+    with kb_tab2:
         st.subheader("📄 Documentos")
         
         if "documentos" not in st.session_state:
             st.session_state.documentos = []
         if "documentos_auto_loaded" not in st.session_state:
             st.session_state.documentos_auto_loaded = False
-        
+
         uploaded_file = st.file_uploader("Subir PDF/Word", type=['pdf', 'docx'])
-        
+
         if uploaded_file and st.button("Procesar"):
             with st.spinner(f"Procesando {uploaded_file.name}..."):
                 files = {"file": (uploaded_file.name, uploaded_file.getvalue())}
                 response = api_request("POST", "/documents/upload", files=files)
-                
+
                 if response and response.status_code == 200:
                     result = response.json()
                     st.success("Documento procesado")
@@ -967,7 +782,7 @@ with tab2:
                     st.session_state.documentos_auto_loaded = False
                 elif response:
                     render_error_response(response)
-        
+
         # Auto-load documentos on first entry
         if not st.session_state.documentos_auto_loaded:
             response = api_request("GET", "/documents")
@@ -976,14 +791,14 @@ with tab2:
                 st.session_state.documentos_auto_loaded = True
             elif response:
                 render_error_response(response)
-        
+
         if st.button("Listar Documentos"):
             response = api_request("GET", "/documents")
             if response and response.status_code == 200:
                 st.session_state.documentos = response.json()
             elif response:
                 render_error_response(response)
-        
+
         docs = st.session_state.get("documentos", [])
         if docs:
             st.success(f"{len(docs)} documentos")
@@ -1011,6 +826,191 @@ with tab2:
                             st.rerun()
                         elif toggle_resp:
                             render_error_response(toggle_resp)
+
+    with kb_tab3:
+        st.subheader("❓ Preguntas")
+
+        if "preguntas" not in st.session_state:
+            st.session_state.preguntas = []
+        if "kb_pregunta_edit_message" not in st.session_state:
+            st.session_state.kb_pregunta_edit_message = None
+        if "preguntas_auto_loaded" not in st.session_state:
+            st.session_state.preguntas_auto_loaded = False
+
+        kb_pregunta_edit_message = st.session_state.get("kb_pregunta_edit_message")
+        if kb_pregunta_edit_message:
+            st.success(kb_pregunta_edit_message)
+            st.session_state.kb_pregunta_edit_message = None
+
+        # Auto-load preguntas on first entry
+        if not st.session_state.preguntas_auto_loaded:
+            response = api_request("GET", "/kb/preguntas")
+            if response and response.status_code == 200:
+                st.session_state.preguntas = response.json()
+                st.session_state.preguntas_auto_loaded = True
+            elif response:
+                render_error_response(response)
+
+        if st.button("Listar todas las preguntas", key="btn_list_all_preguntas"):
+            response = api_request("GET", "/kb/preguntas")
+            if response and response.status_code == 200:
+                st.session_state.preguntas = response.json()
+                st.success(f"{len(st.session_state.preguntas)} preguntas activas")
+            elif response:
+                render_error_response(response)
+
+        respuestas_catalog = load_respuestas_catalog()
+        answer_key_by_respuesta_id = {
+            r.get("id"): r.get("answerKey")
+            for r in respuestas_catalog
+            if r.get("id")
+        }
+
+        if st.session_state.get("preguntas", []):
+            st.dataframe(
+                [
+                    {
+                        "id": p.get("id"),
+                        "texto": p.get("texto"),
+                        "respuestaId": p.get("respuestaId"),
+                        "answerKey": answer_key_by_respuesta_id.get(p.get("respuestaId"), "N/A"),
+                        "activa": p.get("activa")
+                    }
+                    for p in st.session_state.get("preguntas", [])
+                ],
+                use_container_width=True
+            )
+
+        st.markdown("---")
+        st.markdown("**Agregar pregunta**")
+        with st.form("form_add_pregunta"):
+            new_pregunta_texto = st.text_area("Texto pregunta")
+            col_add_1, col_add_2 = st.columns(2)
+            with col_add_1:
+                new_pregunta_respuesta_id = st.text_input("Respuesta ID (opcional)")
+            with col_add_2:
+                new_pregunta_answer_key = st.text_input(
+                    "Answer Key (opcional)",
+                    help="Si completás este campo, se resuelve automáticamente la respuesta por answerKey.",
+                )
+            new_pregunta_id_padre = st.text_input("ID Padre (opcional)")
+            add_pregunta = st.form_submit_button("Agregar pregunta")
+            if add_pregunta:
+                resolved_respuesta_id, resolution_error = resolve_respuesta_id(
+                    new_pregunta_respuesta_id,
+                    new_pregunta_answer_key,
+                )
+                if resolution_error:
+                    st.warning(resolution_error)
+                elif not resolved_respuesta_id:
+                    st.warning("Debes ingresar Respuesta ID o Answer Key")
+                else:
+                    payload = {
+                        "texto": new_pregunta_texto,
+                        "respuestaId": resolved_respuesta_id,
+                        "idPadre": new_pregunta_id_padre or None
+                    }
+                    response = api_request("POST", "/kb/preguntas", json=payload)
+                    if response and response.status_code == 200:
+                        st.success("Pregunta creada")
+                        st.rerun()
+                    elif response:
+                        render_error_response(response)
+
+        st.markdown("---")
+        st.markdown("**Editar pregunta**")
+        if st.session_state.pop("clear_edit_pregunta_next_run", False):
+            st.session_state["select_edit_pregunta"] = ""
+        pregunta_options = st.session_state.get("preguntas", [])
+        pregunta_map = {
+            f"{p.get('id')} - {p.get('texto', '')[:80]}": p
+            for p in pregunta_options
+        }
+        selected_pregunta_label = st.selectbox(
+            "Seleccionar pregunta",
+            [""] + list(pregunta_map.keys()),
+            key="select_edit_pregunta"
+        )
+
+        with st.form("form_edit_pregunta"):
+            default_pregunta_text = ""
+            default_pregunta_respuesta = ""
+            default_pregunta_answer_key = ""
+            selected_pregunta_id = ""
+
+            if selected_pregunta_label:
+                selected_pregunta = pregunta_map[selected_pregunta_label]
+                selected_pregunta_id = selected_pregunta.get("id", "")
+                default_pregunta_text = selected_pregunta.get("texto", "")
+                default_pregunta_respuesta = selected_pregunta.get("respuestaId", "")
+                default_pregunta_answer_key = answer_key_by_respuesta_id.get(default_pregunta_respuesta, "")
+
+            edit_pregunta_texto = st.text_area("Nuevo texto", value=default_pregunta_text)
+            col_edit_1, col_edit_2 = st.columns(2)
+            with col_edit_1:
+                edit_pregunta_respuesta = st.text_input(
+                    "Nuevo respuestaId (opcional)",
+                    value=default_pregunta_respuesta,
+                )
+            with col_edit_2:
+                edit_pregunta_answer_key = st.text_input(
+                    "Nuevo answerKey (opcional)",
+                    value=default_pregunta_answer_key,
+                )
+
+            edit_pregunta_submit = st.form_submit_button("Guardar cambios pregunta")
+
+            if edit_pregunta_submit:
+                if not selected_pregunta_id:
+                    st.warning("Primero lista y selecciona una pregunta")
+                else:
+                    resolved_respuesta_id, resolution_error = resolve_respuesta_id(
+                        edit_pregunta_respuesta,
+                        edit_pregunta_answer_key,
+                    )
+                    if resolution_error:
+                        st.warning(resolution_error)
+                    else:
+                        payload = {
+                            "texto": edit_pregunta_texto,
+                            "respuestaId": resolved_respuesta_id or None
+                        }
+                        response = api_request("PUT", f"/kb/preguntas/{selected_pregunta_id}", json=payload)
+                        if response and response.status_code == 200:
+                            refreshed_preguntas = api_request("GET", "/kb/preguntas")
+                            if refreshed_preguntas and refreshed_preguntas.status_code == 200:
+                                st.session_state.preguntas = refreshed_preguntas.json() or []
+                                st.session_state.kb_pregunta_edit_message = "Pregunta actualizada"
+                                st.session_state["clear_edit_pregunta_next_run"] = True
+                                st.rerun()
+                            elif refreshed_preguntas:
+                                render_error_response(refreshed_preguntas)
+                                st.error("La pregunta se actualizó, pero falló la recarga del listado.")
+                            else:
+                                st.error("La pregunta se actualizó, pero no se pudo refrescar la lista.")
+                        elif response:
+                            render_error_response(response)
+                        else:
+                            st.error("No se pudo actualizar la pregunta (sin respuesta del backend).")
+
+        st.markdown("---")
+        st.markdown("**Eliminar pregunta**")
+        delete_pregunta_label = st.selectbox(
+            "Seleccionar pregunta a eliminar",
+            [""] + list(pregunta_map.keys()),
+            key="select_delete_pregunta"
+        )
+        if st.button("Eliminar pregunta", key="btn_delete_pregunta"):
+            if not delete_pregunta_label:
+                st.warning("Selecciona una pregunta")
+            else:
+                pregunta_id = pregunta_map[delete_pregunta_label].get("id")
+                response = api_request("DELETE", f"/kb/preguntas/{pregunta_id}")
+                if response and response.status_code == 200:
+                    st.success("Pregunta deshabilitada")
+                    st.rerun()
+                elif response:
+                    render_error_response(response)
 
     with kb_tab4:
         st.subheader("📸 Snapshots")
