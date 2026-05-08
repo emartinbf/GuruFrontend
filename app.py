@@ -2533,7 +2533,7 @@ with testing_tab1:
 
     # Barra de filtros
     st.markdown("**Filtros**")
-    filter_cols = st.columns([2, 2, 2, 2, 2])
+    filter_cols = st.columns([2, 2, 2, 2])
     with filter_cols[0]:
         filter_resultado = st.selectbox(
             "Resultado",
@@ -2544,21 +2544,16 @@ with testing_tab1:
         filter_estado = st.selectbox(
             "Estado",
             ["Todos", "Pendiente", "Resuelta"],
+            index=1,
             key="review_estado_filter"
         )
     with filter_cols[2]:
-        filter_impacto = st.multiselect(
-            "Impacto",
-            ["⬆️ Alto", "➡️ Medio", "⬇️ Bajo"],
-            key="review_impacto_filter"
-        )
-    with filter_cols[3]:
         filter_fecha_from = st.date_input(
             "Desde",
             value=datetime.now().date() - timedelta(days=7),
             key="review_fecha_from"
         )
-    with filter_cols[4]:
+    with filter_cols[3]:
         filter_fecha_to = st.date_input(
             "Hasta",
             value=datetime.now().date(),
@@ -2598,18 +2593,6 @@ with testing_tab1:
         
         if filter_estado != "Todos":
             params["reviewStatus"] = "pendiente_revision" if filter_estado == "Pendiente" else "resuelta_con_existente,resuelta_con_nueva"
-        
-        if filter_impacto:
-            # Mapear labels con flechas a valores de nivel
-            impact_values = []
-            if "⬆️ Alto" in filter_impacto:
-                impact_values.append("alto")
-            if "➡️ Medio" in filter_impacto:
-                impact_values.append("medio")
-            if "⬇️ Bajo" in filter_impacto:
-                impact_values.append("bajo")
-            if impact_values:
-                params["impactLevel"] = ",".join(impact_values)
         
         if filter_busqueda.strip():
             params["textSearch"] = filter_busqueda.strip()
@@ -2672,7 +2655,7 @@ with testing_tab1:
 
             title = f"{status_badge} {status_label} | {query[:80]}"
 
-            with st.expander(title, expanded=(idx == 0)):
+            with st.expander(title, expanded=False):
                 col1, col2 = st.columns([2, 1])
                 
                 with col1:
