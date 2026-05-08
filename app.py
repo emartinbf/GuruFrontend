@@ -1279,9 +1279,8 @@ with tab4:
     if "quality_batch_report" not in st.session_state:
         st.session_state.quality_batch_report = None
 
-    testing_tab1, testing_tab2, testing_tab3, testing_tab4, testing_tab5, testing_tab6 = st.tabs([
-        "💬 Feedback de respuestas",
-        "❓ Sin Responder",
+    testing_tab1, testing_tab2, testing_tab3, testing_tab4, testing_tab5 = st.tabs([
+        "📋 Cola de revisión",
         "🧪 Regression DataSet",
         "🔍 Detectar Duplicados",
         "🎯 Search Top N",
@@ -1752,7 +1751,7 @@ with tab4:
             else:
                 st.info("No hubo resultados para esa query/topN")
 
-    with testing_tab6:
+    with testing_tab5:
         st.subheader("LLM Evaluator")
         st.markdown("Evalúa calidad de una respuesta con LLM-as-a-judge")
 
@@ -2505,321 +2504,322 @@ with tab3:
                     st.success("Todos los tests pasaron")
 
 with testing_tab1:
-    st.subheader("Feedback de respuestas")
-    st.caption("Casos candidatos: preguntas ordenadas por menor confidence para revisión rápida.")
+    st.subheader("Cola de revisión")
+    st.caption("Vista unificada de todos los ítems pendientes de revisión: sin respuesta, respuestas con bajo score y feedback negativo del usuario.")
 
-    if "qa_candidates" not in st.session_state:
-        st.session_state.qa_candidates = []
-    if "qa_auto_loaded" not in st.session_state:
-        st.session_state.qa_auto_loaded = False
-    if "qa_save_message" not in st.session_state:
-        st.session_state.qa_save_message = None
+    # Leyenda de símbolos
+    with st.expander("ℹ️ Significado de símbolos", expanded=False):
+        st.markdown("""
+        **Estado unificado (lado izquierdo del título):**
+        - 🔴 **Rojo**: Feedback negativo del usuario O Sin respuesta (no_match)
+        - 🟡 **Amarillo**: Score bajo (below_threshold) sin feedback negativo
+        - 🟢 **Verde**: Match sin feedback negativo
+        """)
 
-    with st.container():
+    if "review_queue" not in st.session_state:
+        st.session_state.review_queue = []
+    if "review_queue_loaded" not in st.session_state:
+        st.session_state.review_queue_loaded = False
+    if "review_queue_page" not in st.session_state:
+        st.session_state.review_queue_page = 1
+    if "review_resolved_message" not in st.session_state:
+        st.session_state.review_resolved_message = None
 
-        qa_save_message = st.session_state.get("qa_save_message")
-        if qa_save_message:
-            st.success(qa_save_message)
-            st.session_state.qa_save_message = None
+    # Mostrar mensaje de éxito si existe
+    resolved_msg = st.session_state.get("review_resolved_message")
+    if resolved_msg:
+        st.success(resolved_msg)
+        st.session_state.review_resolved_message = None
 
-        qa_col1, qa_col2, _ = st.columns([1, 1, 6])
-        with qa_col1:
-            qa_limit = st.number_input("Muestra base", min_value=10, max_value=100, value=20, step=10, key="qa_limit")
-        with qa_col2:
-            st.write("")
-            st.write("")
-            run_generate_qa = st.button("Generar lista QA", type="primary", key="btn_generate_qa")
+    # Barra de filtros
+    st.markdown("**Filtros**")
+    filter_cols = st.columns([2, 2, 2, 2, 2])
+    with filter_cols[0]:
+        filter_resultado = st.selectbox(
+            "Resultado",
+            ["Todos", "Sin respuesta", "Score bajo", "Match"],
+            key="review_resultado_filter"
+        )
+    with filter_cols[1]:
+        filter_estado = st.selectbox(
+            "Estado",
+            ["Todos", "Pendiente", "Resuelta"],
+            key="review_estado_filter"
+        )
+    with filter_cols[2]:
+        filter_impacto = st.multiselect(
+            "Impacto",
+            ["⬆️ Alto", "➡️ Medio", "⬇️ Bajo"],
+            key="review_impacto_filter"
+        )
+    with filter_cols[3]:
+        filter_fecha_from = st.date_input(
+            "Desde",
+            value=datetime.now().date() - timedelta(days=7),
+            key="review_fecha_from"
+        )
+    with filter_cols[4]:
+        filter_fecha_to = st.date_input(
+            "Hasta",
+            value=datetime.now().date(),
+            key="review_fecha_to"
+        )
 
-        # Auto-load qa candidates on first entry
-        if not st.session_state.qa_auto_loaded:
-            with st.spinner(f"Cargando lista automática de {qa_limit} preguntas..."):
-                pending_response = api_request("GET", "/qa/pending-reviews", params={"limit": int(qa_limit)})
-                if pending_response and pending_response.status_code == 200:
-                    pending_payload = pending_response.json() or {}
-                    pending_reviews = (
-                        pending_payload.get("reviews")
-                        if isinstance(pending_payload, dict)
-                        else pending_payload
-                    ) or []
-                    candidates = []
-                    for review in pending_reviews:
-                        normalized_review = normalize_recent_item(review)
-                        top3 = normalize_top_results(
-                            review.get("topResults")
-                            or review.get("top_results")
-                            or review.get("top3Alternatives")
-                            or []
-                        )
-                        predicted = top3[0] if top3 else {
-                            "answerId": normalized_review.get("answerId"),
-                            "answerText": normalized_review.get("answerText") or "",
-                        }
-                        candidates.append(
-                            {
-                                "query": normalized_review.get("originalQuery") or normalized_review.get("query") or "",
-                                "queryHistoryId": normalized_review.get("queryHistoryId") or review.get("queryHistoryId"),
-                                "queryHash": normalized_review.get("queryHash") or review.get("queryHash", ""),
-                                "version": normalized_review.get("version") or review.get("version"),
-                                "timestamp": normalized_review.get("timestamp") or review.get("timestamp"),
-                                "confidence": to_float(
-                                    normalized_review.get("score", review.get("predictedScore", 0)),
-                                    default=0.0,
-                                ),
-                                "predictedAnswerId": (
-                                    predicted.get("respuestaId")
-                                    or predicted.get("answerId")
-                                    or normalized_review.get("answerId")
-                                ),
-                                "predictedAnswerText": (
-                                    predicted.get("textoRespuesta")
-                                    or predicted.get("answerText")
-                                    or normalized_review.get("answerText")
-                                    or ""
-                                ),
-                                "top3": top3,
-                            }
-                        )
-                    st.session_state.qa_candidates = candidates
-                    st.session_state.qa_auto_loaded = True
-                elif pending_response:
-                    render_error_response(pending_response)
+    search_cols = st.columns([4, 1])
+    with search_cols[0]:
+        filter_busqueda = st.text_input(
+            "Búsqueda por texto en query",
+            placeholder="Buscar palabra en la pregunta...",
+            key="review_search"
+        )
+    with search_cols[1]:
+        st.write("")
+        cargar_cola = st.button("Cargar cola", type="primary", key="btn_cargar_cola_revision")
 
-        if run_generate_qa:
-            with st.spinner(f"Armando lista automática de {qa_limit} preguntas..."):
-                pending_response = api_request("GET", "/qa/pending-reviews", params={"limit": int(qa_limit)})
+    if cargar_cola or not st.session_state.review_queue_loaded:
+        # Construir parámetros
+        params = {
+            "page": st.session_state.review_queue_page,
+            "pageSize": 20,
+        }
+        
+        if filter_fecha_from:
+            params["from"] = datetime.combine(filter_fecha_from, time.min).isoformat()
+        if filter_fecha_to:
+            params["to"] = datetime.combine(filter_fecha_to, time.max).isoformat()
+        
+        if filter_resultado != "Todos":
+            if filter_resultado == "Sin respuesta":
+                params["resultado"] = "no_match"
+            elif filter_resultado == "Score bajo":
+                params["resultado"] = "below_threshold"
+            elif filter_resultado == "Match":
+                params["resultado"] = "match"
+        
+        if filter_estado != "Todos":
+            params["reviewStatus"] = "pendiente_revision" if filter_estado == "Pendiente" else "resuelta_con_existente,resuelta_con_nueva"
+        
+        if filter_impacto:
+            # Mapear labels con flechas a valores de nivel
+            impact_values = []
+            if "⬆️ Alto" in filter_impacto:
+                impact_values.append("alto")
+            if "➡️ Medio" in filter_impacto:
+                impact_values.append("medio")
+            if "⬇️ Bajo" in filter_impacto:
+                impact_values.append("bajo")
+            if impact_values:
+                params["impactLevel"] = ",".join(impact_values)
+        
+        if filter_busqueda.strip():
+            params["textSearch"] = filter_busqueda.strip()
 
-                candidates = []
-                if pending_response and pending_response.status_code == 200:
-                    pending_payload = pending_response.json() or {}
-                    pending_reviews = (
-                        pending_payload.get("reviews")
-                        if isinstance(pending_payload, dict)
-                        else pending_payload
-                    ) or []
+        with st.spinner("Cargando cola de revisión..."):
+            response = api_request("GET", "/qa/review-queue", params=params)
 
-                    for review in pending_reviews:
-                        normalized_review = normalize_recent_item(review)
-                        top3 = normalize_top_results(
-                            review.get("topResults")
-                            or review.get("top_results")
-                            or review.get("top3Alternatives")
-                            or []
-                        )
-                        predicted = top3[0] if top3 else {
-                            "answerId": normalized_review.get("answerId"),
-                            "answerText": normalized_review.get("answerText") or "",
-                        }
+        if response and response.status_code == 200:
+            payload = response.json()
+            st.session_state.review_queue = payload.get("items", [])
+            st.session_state.review_queue_page = payload.get("page", 1)
+            st.session_state.review_queue_total = payload.get("total", 0)
+            st.session_state.review_queue_total_pages = payload.get("totalPages", 0)
+            st.session_state.review_queue_loaded = True
+            st.success(f"Cola cargada: {len(st.session_state.review_queue)} ítems")
+        elif response:
+            render_error_response(response)
 
-                        candidates.append(
-                            {
-                                "query": normalized_review.get("originalQuery") or normalized_review.get("query") or "",
-                                "queryHistoryId": normalized_review.get("queryHistoryId") or review.get("queryHistoryId"),
-                                "queryHash": normalized_review.get("queryHash") or review.get("queryHash", ""),
-                                "version": normalized_review.get("version") or review.get("version"),
-                                "timestamp": normalized_review.get("timestamp") or review.get("timestamp"),
-                                "confidence": to_float(
-                                    normalized_review.get("score", review.get("predictedScore", 0)),
-                                    default=0.0,
-                                ),
-                                "predictedAnswerId": (
-                                    predicted.get("respuestaId")
-                                    or predicted.get("answerId")
-                                    or normalized_review.get("answerId")
-                                ),
-                                "predictedAnswerText": (
-                                    predicted.get("textoRespuesta")
-                                    or predicted.get("answerText")
-                                    or normalized_review.get("answerText")
-                                    or ""
-                                ),
-                                "top3": top3,
-                            }
-                        )
+    # Mostrar cola
+    review_items = st.session_state.get("review_queue", []) or []
+    
+    if not review_items:
+        st.info("No hay ítems en la cola de revisión con los filtros aplicados.")
+    else:
+        # Catálogo de respuestas para resoluciones
+        respuestas_catalog = load_respuestas_catalog()
+        answer_map = {
+            f"{r.get('id')} [{r.get('answerKey') or 'Sin key'}]": r
+            for r in respuestas_catalog
+            if r.get("id")
+        }
 
-                st.session_state.qa_candidates = candidates
+        # Mostrar cada ítem
+        for idx, item in enumerate(review_items):
+            item_id = item.get("id")
+            query = item.get("originalQuery", item.get("query", "N/A"))
+            resultado = item.get("resultado", "N/A")
+            score = to_float(item.get("score", 0))
+            impact_level = item.get("impactLevel", "bajo").lower()
+            review_status = item.get("reviewStatus", "pendiente_revision")
+            ai_draft_status = item.get("aiDraftStatus", "")
+            ai_draft_answer = item.get("aiDraftAnswer", "")
+            has_feedback = to_bool(item.get("hasUserFeedback", False))
+            feedback_type = item.get("userFeedbackType", "")
+            feedback_comment = item.get("feedbackComment", "")
 
-        qa_candidates = st.session_state.get("qa_candidates", []) or []
+            # Determinar color unificado: rojo si feedback neg o no_match, amarillo si below_threshold sin feedback neg, verde si match sin feedback neg
+            if has_feedback and feedback_type == "negative":
+                status_badge = "🔴"
+                status_label = "Feedback negativo"
+            elif resultado == "no_match":
+                status_badge = "🔴"
+                status_label = "Sin respuesta"
+            elif resultado == "below_threshold":
+                status_badge = "🟡"
+                status_label = "Score bajo"
+            else:
+                status_badge = "🟢"
+                status_label = "Match"
 
-        if not qa_candidates:
-            st.info("No hay pendientes para QA manual.")
-        else:
-            st.success(f"{len(qa_candidates)} preguntas cargadas para QA manual")
+            title = f"{status_badge} {status_label} | {query[:80]}"
 
-            respuestas_catalog = load_respuestas_catalog()
-            correct_options = {
-                f"{r.get('id')} [{r.get('answerKey') or 'Sin key'}]": r
-                for r in respuestas_catalog
-                if r.get("id")
-            }
+            with st.expander(title, expanded=(idx == 0)):
+                col1, col2 = st.columns([2, 1])
+                
+                with col1:
+                    st.write(f"**Query:** {query}")
+                    st.write(f"**Score:** {score:.3f} | **Estado:** {review_status}")
+                    st.write(f"**Resultado técnico:** {resultado}")
+                    
+                    # Mostrar respuesta proporcionada
+                    answer_key = item.get("answerKey", "")
+                    answer_text = item.get("answerText", "")
+                    if answer_key or answer_text:
+                        st.markdown("---")
+                        if answer_key:
+                            st.write(f"**Answer Key:** {answer_key}")
+                        if answer_text:
+                            st.write(f"**Respuesta proporcionada:** {answer_text}")
+                    
+                    if has_feedback:
+                        st.caption(f"💬 Comentario del usuario: {feedback_comment or '(sin comentario)'}")
+                    if ai_draft_status == "generada" and ai_draft_answer:
+                        st.info(f"💡 Borrador IA disponible: {ai_draft_answer[:200]}...")
 
-            for global_idx, candidate in enumerate(qa_candidates):
-                title = f"#{global_idx + 1} | conf {candidate.get('confidence', 0):.3f} | {candidate.get('query', '')[:90]}"
+                with col2:
+                    feedback_label = "Sin feedback" if not has_feedback else ("👍 Positivo" if feedback_type == "positive" else "👎 Negativo")
+                    st.markdown(f'<p style="font-size:0.8rem;color:grey;margin-bottom:2px">Feedback</p><p style="font-size:1.25rem;font-weight:700;margin:0">{feedback_label}</p>', unsafe_allow_html=True)
 
-                with st.expander(title, expanded=(global_idx == 0)):
-                    st.write("**Pregunta:**", candidate.get("query") or "N/A")
-                    st.write("**Respuesta predicha:**", candidate.get("predictedAnswerText") or "N/A")
-                    st.write("**AnswerId predicho:**", candidate.get("predictedAnswerId") or "N/A")
-                    st.write("**Confidence:**", f"{to_float(candidate.get('confidence', 0)):.3f}")
+                # Panel de resolución
+                st.markdown("---")
+                st.markdown("**Resolver**")
 
-                    top3 = candidate.get("top3", []) or []
-                    if top3:
-                        st.markdown("**Top 3 respuestas sugeridas**")
-                        st.dataframe(
-                            [
-                                {
-                                    "Rank": row.get("rank"),
-                                    "RespuestaId": row.get("respuestaId"),
-                                    "Score": row.get("score"),
-                                    "Texto": (row.get("textoRespuesta") or "")[:200],
-                                }
-                                for row in top3
-                            ],
-                            use_container_width=True,
-                        )
+                accion = st.radio(
+                    "Acción",
+                    ["usar_existente", "crear_nueva", "descartar"],
+                    format_func=lambda x: {
+                        "usar_existente": "Usar respuesta existente",
+                        "crear_nueva": "Crear nueva respuesta",
+                        "descartar": "Descartar (no amerita KB)"
+                    }[x],
+                    horizontal=True,
+                    key=f"review_accion_{idx}"
+                )
 
-                    qa_decision = st.radio(
-                        "Evaluación QA",
-                        ["correcto", "incorrecto"],
-                        horizontal=True,
-                        key=f"qa_decision_{global_idx}",
+                # Campos según la acción
+                pregunta_texto = st.text_input(
+                    "Texto de pregunta (opcional)",
+                    value=query,
+                    key=f"review_pregunta_{idx}",
+                    help="Si no se completa, se usa la query original"
+                )
+
+                respuesta_id_existente = None
+                nueva_respuesta_texto = ""
+                nueva_respuesta_key = ""
+
+                if accion == "usar_existente":
+                    selected_respuesta = st.selectbox(
+                        "Seleccionar respuesta existente",
+                        [""] + list(answer_map.keys()),
+                        key=f"review_respuesta_select_{idx}"
+                    )
+                    if selected_respuesta:
+                        respuesta_id_existente = answer_map[selected_respuesta].get("id")
+
+                elif accion == "crear_nueva":
+                    nueva_respuesta_texto = st.text_area(
+                        "Texto de nueva respuesta",
+                        value=ai_draft_answer,
+                        height=120,
+                        key=f"review_nueva_respuesta_{idx}",
+                        placeholder="Escribir la nueva respuesta..."
+                    )
+                    nueva_respuesta_key = st.text_input(
+                        "ANSWER_KEY (opcional)",
+                        key=f"review_nueva_key_{idx}",
+                        placeholder="EJ: SALDO_CONSULTA"
                     )
 
-                    corrected_question_text = ""
-                    answer_resolution_mode = "Usar respuesta existente"
-                    selected_correct = ""
-                    new_answer_text = ""
-                    new_answer_key = ""
+                observaciones = st.text_area(
+                    "Observaciones (opcional)",
+                    key=f"review_obs_{idx}",
+                    height=60,
+                    placeholder="Notas del revisor..."
+                )
 
-                    if qa_decision == "incorrecto":
-                        corrected_question_text = st.text_area(
-                            "Texto corregido de la pregunta",
-                            value=candidate.get("query") or "",
-                            key=f"qa_corrected_question_{global_idx}",
-                            help="Se envía como CorrectedQuestionText cuando la revisión es incorrecta.",
-                        )
+                agregar_regression = st.checkbox(
+                    "Agregar al dataset de regresión",
+                    value=True,
+                    key=f"review_regression_{idx}"
+                )
 
-                        answer_resolution_mode = st.radio(
-                            "Respuesta correcta",
-                            ["Usar respuesta existente", "Crear nueva respuesta"],
-                            horizontal=True,
-                            key=f"qa_answer_mode_{global_idx}",
-                        )
+                if st.button("Guardar resolución", key=f"review_guardar_{idx}"):
+                    # Validar
+                    if accion == "usar_existente" and not respuesta_id_existente:
+                        st.error("Selecciona una respuesta existente")
+                    elif accion == "crear_nueva" and not nueva_respuesta_texto.strip():
+                        st.error("Completa el texto de la nueva respuesta")
+                    elif accion == "descartar" and not observaciones.strip():
+                        st.error("Completa las observaciones para descartar")
+                    else:
+                        # Construir payload
+                        payload = {
+                            "accion": accion,
+                            "resueltoPor": st.session_state.get("auth_user", "streamlit-qa"),
+                            "preguntaTexto": pregunta_texto.strip() if pregunta_texto.strip() else None,
+                            "agregarAlRegressionDataset": agregar_regression and accion != "descartar",
+                        }
 
-                        if answer_resolution_mode == "Usar respuesta existente":
-                            selected_correct = st.selectbox(
-                                "Seleccionar respuesta correcta",
-                                [""] + list(correct_options.keys()),
-                                key=f"qa_correct_{global_idx}",
-                            )
-                        else:
-                            new_answer_text = st.text_area(
-                                "Texto de nueva respuesta",
-                                key=f"qa_new_answer_text_{global_idx}",
-                                placeholder="Escribí la nueva respuesta correcta",
-                            )
-                            new_answer_key = st.text_input(
-                                "ANSWER_KEY (código usuario, opcional)",
-                                key=f"qa_new_answer_key_{global_idx}",
-                                placeholder="EJ: SALDO_CONSULTA",
-                                help="Si no lo completas, el backend lo genera automáticamente.",
-                            )
+                        if accion == "usar_existente":
+                            payload["respuestaIdExistente"] = respuesta_id_existente
+                        elif accion == "crear_nueva":
+                            payload["nuevaRespuestaTexto"] = nueva_respuesta_texto.strip()
+                            payload["nuevaRespuestaAnswerKey"] = nueva_respuesta_key.strip() if nueva_respuesta_key.strip() else None
+                        elif accion == "descartar":
+                            payload["observaciones"] = observaciones.strip()
 
-                    qa_comment = st.text_area(
-                        "Comentario QA (opcional)",
-                        key=f"qa_comment_{global_idx}",
-                        placeholder="Contexto para negocio/QA (error observado, detalle, etc.)",
-                    )
+                        # Enviar
+                        with st.spinner("Guardando resolución..."):
+                            response = api_request("POST", f"/qa/review-queue/{item_id}/resolve", json=payload)
 
-                    if st.button("Guardar revisión", key=f"qa_save_{global_idx}"):
-                        if qa_decision == "incorrecto" and not corrected_question_text.strip():
-                            st.warning("Completa el texto corregido de la pregunta antes de guardar.")
-                        elif qa_decision == "incorrecto" and answer_resolution_mode == "Usar respuesta existente" and not selected_correct:
-                            st.warning("Selecciona la respuesta correcta antes de guardar.")
-                        elif qa_decision == "incorrecto" and answer_resolution_mode == "Crear nueva respuesta" and not new_answer_text.strip():
-                            st.warning("Completa el texto de la nueva respuesta antes de guardar.")
-                        else:
-                            feedback_type = "positive" if qa_decision == "correcto" else "negative"
-                            using_existing_answer = qa_decision == "incorrecto" and answer_resolution_mode == "Usar respuesta existente"
-                            correct_answer = correct_options.get(selected_correct, {}) if using_existing_answer and selected_correct else {}
-                            corrected_question_clean = corrected_question_text.strip() if qa_decision == "incorrecto" else None
-                            correct_answer_id = correct_answer.get("id") if using_existing_answer else None
-                            new_answer_text_clean = (
-                                new_answer_text.strip()
-                                if qa_decision == "incorrecto" and answer_resolution_mode == "Crear nueva respuesta"
-                                else None
-                            )
-                            new_answer_key_clean = (
-                                new_answer_key.strip()
-                                if qa_decision == "incorrecto" and answer_resolution_mode == "Crear nueva respuesta"
-                                else None
-                            )
-                            qa_submit_ok = False
-                            review_saved = False
+                        if response and response.status_code in (200, 201):
+                            st.session_state.review_resolved_message = "✅ Resolución guardada correctamente"
+                            st.session_state.review_queue_loaded = False
+                            st.rerun()
+                        elif response:
+                            render_error_response(response)
 
-                            comment_parts = []
-                            if qa_comment.strip():
-                                comment_parts.append(qa_comment.strip())
-                            if qa_decision == "incorrecto":
-                                comment_parts.append(f"QA_CORRECTED_QUESTION={corrected_question_clean}")
-                                if correct_answer_id:
-                                    comment_parts.append(
-                                        f"QA_CORRECT_ANSWER_ID={correct_answer_id} QA_CORRECT_ANSWER_KEY={correct_answer.get('answerKey')}"
-                                    )
-                                if new_answer_text_clean:
-                                    comment_parts.append(f"QA_NEW_ANSWER_TEXT={new_answer_text_clean}")
-                                if new_answer_key_clean:
-                                    comment_parts.append(f"QA_NEW_ANSWER_KEY={new_answer_key_clean}")
+        # Paginación
+        st.markdown("---")
+        total_pages = st.session_state.get("review_queue_total_pages", 1)
+        current_page = st.session_state.get("review_queue_page", 1)
+        
+        if total_pages > 1:
+            pag_cols = st.columns([1, 4, 1])
+            with pag_cols[0]:
+                if current_page > 1 and st.button("← Anterior", key="btn_pag_prev"):
+                    st.session_state.review_queue_page -= 1
+                    st.session_state.review_queue_loaded = False
+                    st.rerun()
+            with pag_cols[1]:
+                st.caption(f"Página {current_page} de {total_pages}")
+            with pag_cols[2]:
+                if current_page < total_pages and st.button("Siguiente →", key="btn_pag_next"):
+                    st.session_state.review_queue_page += 1
+                    st.session_state.review_queue_loaded = False
+                    st.rerun()
 
-                            if candidate.get("queryHistoryId"):
-                                qa_payload = {
-                                    "queryHistoryId": candidate.get("queryHistoryId"),
-                                    "isCorrect": qa_decision == "correcto",
-                                    "correctedQuestionText": corrected_question_clean,
-                                    "correctAnswerId": correct_answer_id,
-                                    "newAnswerText": new_answer_text_clean,
-                                    "newAnswerKey": new_answer_key_clean,
-                                    "notes": " | ".join(comment_parts) if comment_parts else None,
-                                    "reviewedBy": "streamlit-qa",
-                                    "addToRegressionDataset": True,
-                                }
-                                qa_response = api_request("POST", "/qa/submit-review", json=qa_payload)
-                                if qa_response and qa_response.status_code in (200, 201):
-                                    qa_submit_ok = True
-                                    review_saved = True
-                                    st.success("Review QA guardada")
-                                elif qa_response and qa_response.status_code != 404:
-                                    render_error_response(qa_response)
-
-                            if not qa_submit_ok:
-                                feedback_payload = build_feedback_payload(
-                                    query_history_id=candidate.get("queryHistoryId"),
-                                    query_hash=candidate.get("queryHash") or "",
-                                    original_query=candidate.get("query") or "",
-                                    answer_id=candidate.get("predictedAnswerId"),
-                                    score=candidate.get("confidence"),
-                                    feedback_type=feedback_type,
-                                    version=candidate.get("version"),
-                                    comment=" | ".join(comment_parts) if comment_parts else None,
-                                )
-
-                                feedback_response = api_request("POST", "/quality/feedback", json=feedback_payload)
-                                if feedback_response and feedback_response.status_code in (200, 201):
-                                    review_saved = True
-                                    st.success("Feedback QA guardado")
-                                elif feedback_response:
-                                    render_error_response(feedback_response)
-
-                            if review_saved:
-                                updated_candidates = st.session_state.get("qa_candidates", []) or []
-                                if 0 <= global_idx < len(updated_candidates):
-                                    updated_candidates.pop(global_idx)
-                                    st.session_state.qa_candidates = updated_candidates
-                                st.session_state.qa_save_message = "✅ Revisión guardada correctamente."
-                                st.rerun()
-
-                            st.caption("Regresión: gestionada automáticamente por el backend.")
-
-with testing_tab3:
+with testing_tab2:
     st.header("Regression DataSet")
     st.caption("Listado y desactivación de entradas. Alta y edición no disponibles por ahora.")
 
