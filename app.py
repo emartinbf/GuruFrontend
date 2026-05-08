@@ -2143,149 +2143,54 @@ with tab3:
             cache_info = ops_performance.get("cache", {}) or {}
             latency_info = ops_performance.get("latency", {}) or {}
             accuracy_info = ops_performance.get("accuracy", {}) or {}
-            hit_ratio = to_float(cache_info.get("hitRatio", ops_summary.get("cacheHitRatio", 0)))
-            avg_latency = to_float(latency_info.get("averageMs", ops_summary.get("averageLatencyMs", 0)))
-            avg_score = to_float(accuracy_info.get("averageScore", ops_summary.get("averageScore", 0)))
 
             hourly_requests_series = build_requests_per_hour(ops_recent)
-            latency_hourly_series_map = {}
-            for item in ops_recent:
-                ts = parse_iso_datetime(item.get("timestamp"))
-                if not ts:
-                    continue
-                hour_key = ts.replace(minute=0, second=0, microsecond=0).isoformat()
-                latency_hourly_series_map.setdefault(hour_key, []).append(to_float(item.get("totalLatencyMs", 0)))
-            latency_hourly_series = [
-                {
-                    "hour": hour_key,
-                    "latencyMs": (sum(values) / len(values)) if values else 0,
-                }
-                for hour_key, values in sorted(latency_hourly_series_map.items(), key=lambda kv: kv[0])
-            ]
 
-            peak_rpm = max((row.get("requests", 0) for row in hourly_requests_series), default=0)
+            result_distribution = ops_distribution.get("resultado", ops_summary.get("resultadoDistribution", {}))
+            distribution_rows = []
+            distribution_totals = {"below_match": 0.0, "match": 0.0, "no_match": 0.0}
+            normalized_result_aliases = {
+                "below_threshold": "below_match",
+            }
+            label_map = {
+                "below_match": "below_threshold",
+                "match": "match",
+                "no_match": "no match",
+            }
 
-            k1, k2, k3, k4, k5 = st.columns(5)
+            for key, val in (result_distribution or {}).items():
+                normalized_key = str(key).strip().lower().replace(" ", "_").replace("-", "_")
+                normalized_key = normalized_result_aliases.get(normalized_key, normalized_key)
+                quantity = to_float(val)
+                distribution_rows.append(
+                    {
+                        "Resultado": label_map.get(normalized_key, str(key)),
+                        "ResultadoKey": normalized_key,
+                        "Cantidad": quantity,
+                    }
+                )
+                if normalized_key in distribution_totals:
+                    distribution_totals[normalized_key] += quantity
+
+            total_distribution = sum(distribution_totals.values())
+            answered_match_pct = (
+                (distribution_totals["match"] / total_distribution) * 100
+                if total_distribution > 0
+                else 0.0
+            )
+
+            positive_feedbacks = int(ops_feedback_stats.get("positiveFeedbacks", 0))
+            negative_feedbacks = int(ops_feedback_stats.get("negativeFeedbacks", 0))
+
+            k1, k2, k3, k4 = st.columns(4)
             with k1:
                 st.metric("Consultas totales", total_searches)
             with k2:
-                st.metric("Latencia promedio", f"{avg_latency:.2f} ms")
+                st.metric("% respondidas", f"{answered_match_pct:.2f}%")
             with k3:
-                st.metric("Cache hit ratio", f"{hit_ratio * 100:.2f}%")
+                st.metric("👍Feedback positivos", positive_feedbacks)
             with k4:
-                st.metric("Peak requests/hora", int(peak_rpm))
-            with k5:
-                st.metric("Score promedio", f"{avg_score:.4f}")
-
-            st.markdown("---")
-            st.markdown("**Distribución de resultados**")
-            result_distribution = ops_distribution.get("resultado", ops_summary.get("resultadoDistribution", {}))
-            if result_distribution:
-                distribution_rows = []
-                distribution_totals = {"below_match": 0.0, "match": 0.0, "no_match": 0.0}
-                normalized_result_aliases = {
-                    "below_threshold": "below_match",
-                }
-                label_map = {
-                    "below_match": "below_threshold",
-                    "match": "match",
-                    "no_match": "no match",
-                }
-
-                for key, val in result_distribution.items():
-                    normalized_key = str(key).strip().lower().replace(" ", "_").replace("-", "_")
-                    normalized_key = normalized_result_aliases.get(normalized_key, normalized_key)
-                    quantity = to_float(val)
-                    distribution_rows.append(
-                        {
-                            "Resultado": label_map.get(normalized_key, str(key)),
-                            "ResultadoKey": normalized_key,
-                            "Cantidad": quantity,
-                        }
-                    )
-                    if normalized_key in distribution_totals:
-                        distribution_totals[normalized_key] += quantity
-
-                chart_rows = [row for row in distribution_rows if row.get("Cantidad", 0) > 0]
-
-                if chart_rows:
-                    st.vega_lite_chart(
-                        chart_rows,
-                        {
-                            "mark": {"type": "arc", "innerRadius": 50},
-                            "encoding": {
-                                "theta": {"field": "Cantidad", "type": "quantitative"},
-                                "color": {
-                                    "field": "ResultadoKey",
-                                    "type": "nominal",
-                                    "scale": {
-                                        "domain": ["below_match", "match", "no_match"],
-                                        "range": ["#f59e0b", "#2563eb", "#dc2626"],
-                                    },
-                                    "legend": {
-                                        "title": "Resultado",
-                                        "labelExpr": "datum.label === 'below_match' ? 'below_threshold' : datum.label",
-                                    },
-                                },
-                                "tooltip": [
-                                    {"field": "Resultado", "type": "nominal"},
-                                    {"field": "Cantidad", "type": "quantitative"},
-                                ],
-                            },
-                        },
-                        use_container_width=True,
-                    )
-                else:
-                    st.info("Sin datos positivos para graficar distribución.")
-
-                st.caption(
-                    " | ".join(
-                        [
-                            f"below_threshold: {int(distribution_totals['below_match'])}",
-                            f"match: {int(distribution_totals['match'])}",
-                            f"no_match: {int(distribution_totals['no_match'])}",
-                        ]
-                    )
-                )
-            else:
-                st.info("Sin datos de distribución.")
-
-            if ops_feedback_stats:
-                st.markdown("---")
-                st.markdown("**Estadísticas Feedback (resultado)**")
-                f1, f2, f3, f4 = st.columns(4)
-                with f1:
-                    st.metric("Total", int(ops_feedback_stats.get("totalFeedbacks", 0)))
-                with f2:
-                    st.metric("👍 Positivos", int(ops_feedback_stats.get("positiveFeedbacks", 0)))
-                with f3:
-                    st.metric("👎 Negativos", int(ops_feedback_stats.get("negativeFeedbacks", 0)))
-                with f4:
-                    st.metric("Tasa positiva", f"{float(ops_feedback_stats.get('positiveRate', 0)):.1%}")
-
-            if ops_recent_debug:
-                st.caption(
-                    "Debug /Metrics/recent -> "
-                    f"raw: {ops_recent_debug.get('rawCount', 0)} | "
-                    f"normalized: {ops_recent_debug.get('normalizedCount', 0)} | "
-                    f"firstTimestamp: {ops_recent_debug.get('firstTimestamp') or 'N/A'} | "
-                    f"firstLatencyMs: {ops_recent_debug.get('firstLatencyMs') if ops_recent_debug.get('firstLatencyMs') is not None else 'N/A'}"
-                )
-
-            st.markdown("---")
-            st.markdown("**Latencia por componente**")
-            component_rows = []
-            component_metrics = latency_info.get("components", {}) or {}
-            for name, value in component_metrics.items():
-                component_rows.append({"Componente": name, "LatencyMs": to_float(value)})
-
-            if not component_rows:
-                component_rows = [
-                    {"Componente": "withCache", "LatencyMs": to_float(latency_info.get("withCacheMs", 0))},
-                    {"Componente": "withoutCache", "LatencyMs": to_float(latency_info.get("withoutCacheMs", 0))},
-                ]
-
-            st.bar_chart(component_rows, x="Componente", y="LatencyMs", use_container_width=True)
+                st.metric("👎Feedback negativos", negative_feedbacks)
 
             st.markdown("---")
             c1, c2 = st.columns(2)
@@ -2297,23 +2202,63 @@ with tab3:
                     st.info("Sin datos suficientes para requests por hora.")
 
             with c2:
-                st.markdown("**Latencia reciente (por hora)**")
-                if latency_hourly_series:
-                    st.line_chart(latency_hourly_series, x="hour", y="latencyMs", use_container_width=True)
+                st.markdown("**Distribución de resultados**")
+                if result_distribution:
+                    chart_rows = [row for row in distribution_rows if row.get("Cantidad", 0) > 0]
+
+                    if chart_rows:
+                        st.vega_lite_chart(
+                            chart_rows,
+                            {
+                                "mark": {"type": "arc", "innerRadius": 50},
+                                "encoding": {
+                                    "theta": {"field": "Cantidad", "type": "quantitative"},
+                                    "color": {
+                                        "field": "ResultadoKey",
+                                        "type": "nominal",
+                                        "scale": {
+                                            "domain": ["below_match", "match", "no_match"],
+                                            "range": ["#f59e0b", "#2563eb", "#dc2626"],
+                                        },
+                                        "legend": {
+                                            "title": "Resultado",
+                                            "labelExpr": "datum.label === 'below_match' ? 'below_threshold' : datum.label",
+                                        },
+                                    },
+                                    "tooltip": [
+                                        {"field": "Resultado", "type": "nominal"},
+                                        {"field": "Cantidad", "type": "quantitative"},
+                                    ],
+                                },
+                            },
+                            use_container_width=True,
+                        )
+                    else:
+                        st.info("Sin datos positivos para graficar distribución.")
+
+                    st.caption(
+                        " | ".join(
+                            [
+                                f"below_threshold: {int(distribution_totals['below_match'])}",
+                                f"match: {int(distribution_totals['match'])}",
+                                f"no_match: {int(distribution_totals['no_match'])}",
+                            ]
+                        )
+                    )
                 else:
-                    st.info("Sin datos recientes para latencia por hora.")
+                    st.info("Sin datos de distribución.")
 
             if ops_recent:
-                st.markdown("---")
-                st.markdown("**Requests acumulados: con cache vs sin cache (por día)**")
-                cache_vs_no_cache_series = build_cache_accumulated_by_day(ops_recent)
+                # st.markdown("---")
+                # st.markdown("**Requests acumulados: con cache vs sin cache (por día)**")
+                # cache_vs_no_cache_series = build_cache_accumulated_by_day(ops_recent)
 
-                st.line_chart(
-                    cache_vs_no_cache_series,
-                    x="day",
-                    y=["Con cache", "Sin cache"],
-                    use_container_width=True
-                )
+                # st.line_chart(
+                #     cache_vs_no_cache_series,
+                #     x="day",
+                #     y=["Con cache", "Sin cache"],
+                #     use_container_width=True
+                # )
 
                 st.markdown("---")
                 st.markdown("**Tendencia de latencia promedio (con/sin cache) por día**")
@@ -2468,16 +2413,6 @@ with tab3:
             )
             st.dataframe(cm_df, use_container_width=True)
 
-            st.markdown("---")
-            st.markdown("**Support por respuesta/categoría**")
-            support = latest_run.get("support", {}) or {}
-            if support:
-                support_rows = [{"item": key, "support": int(val)} for key, val in support.items()]
-                st.dataframe(support_rows, use_container_width=True)
-                st.bar_chart(support_rows, x="item", y="support", use_container_width=True)
-            else:
-                st.info("No hay información de support en la última corrida.")
-
             by_category = latest_run.get("byCategory", {}) or {}
 
             # Los datos de ejecución vienen dentro de detailedReport (MLMetrics/calculate)
@@ -2500,7 +2435,7 @@ with tab3:
                 failed     = int(gr.get("failed", 0) or 0)
                 pass_rate  = to_float(gr.get("passRate", 0))
 
-                g1, g2, g3, g4 = st.columns(4)
+                g1, g2, g3, g4, g6, g7 = st.columns(6)
                 with g1:
                     st.metric("Total", total_tests)
                 with g2:
@@ -2509,10 +2444,6 @@ with tab3:
                     st.metric("Failed", failed)
                 with g4:
                     st.metric("Pass Rate", f"{pass_rate * 100:.1f}%")
-
-                g5, g6, g7 = st.columns(3)
-                with g5:
-                    st.metric("Duración", f"{int(gr.get('totalDurationMs', 0) or 0)} ms")
                 with g6:
                     st.metric("Score Promedio", f"{to_float(gr.get('averageScore', 0)):.3f}")
                 with g7:
