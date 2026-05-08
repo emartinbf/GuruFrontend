@@ -2396,22 +2396,6 @@ with tab3:
                     help="De las respuestas correctas que existían, ¿cuántas encontró el sistema? = TP / (TP + FN)",
                 )
 
-            st.markdown("---")
-            st.markdown("**Matriz de confusión**")
-
-            cm = latest_run.get("confusionMatrix", {}) or {}
-            tp = int(cm.get("truePositives", latest_run.get("truePositives", 0)) or 0)
-            fp = int(cm.get("falsePositives", latest_run.get("falsePositives", 0)) or 0)
-            fn = int(cm.get("falseNegatives", latest_run.get("falseNegatives", 0)) or 0)
-            tn = int(cm.get("trueNegatives", latest_run.get("trueNegatives", 0)) or 0)
-
-            cm_df = pd.DataFrame(
-                [[tp, fn], [fp, tn]],
-                index=["Real Positivo", "Real Negativo"],
-                columns=["Pred Positivo", "Pred Negativo"],
-            )
-            st.dataframe(cm_df, use_container_width=True)
-
             by_category = latest_run.get("byCategory", {}) or {}
 
             # Los datos de ejecución vienen dentro de detailedReport (MLMetrics/calculate)
@@ -2479,6 +2463,22 @@ with tab3:
                             y=["Passed", "Failed"],
                             use_container_width=True,
                         )
+
+                st.markdown("---")
+                st.markdown("**Matriz de confusión**")
+
+                cm = latest_run.get("confusionMatrix", {}) or {}
+                tp = int(cm.get("truePositives", latest_run.get("truePositives", 0)) or 0)
+                fp = int(cm.get("falsePositives", latest_run.get("falsePositives", 0)) or 0)
+                fn = int(cm.get("falseNegatives", latest_run.get("falseNegatives", 0)) or 0)
+                tn = int(cm.get("trueNegatives", latest_run.get("trueNegatives", 0)) or 0)
+
+                cm_df = pd.DataFrame(
+                    [[tp, fn], [fp, tn]],
+                    index=["Real Positivo", "Real Negativo"],
+                    columns=["Pred Positivo", "Pred Negativo"],
+                )
+                st.dataframe(cm_df, use_container_width=True)
 
                 failures = gr.get("failures", []) or []
                 st.markdown("---")
