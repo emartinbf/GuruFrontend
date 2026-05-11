@@ -37,8 +37,10 @@ elif is_streamlit_cloud():
     RUNTIME_ENV = "Cloud"
     API_URL = CLOUD_API_URL_DEFAULT
 else:
+    # Default a CLOUD_API_URL si no hay config y no está en cloud detectado
+    # (fallback seguro para Streamlit Cloud que no detecta correctamente)
     RUNTIME_ENV = "Local"
-    API_URL = LOCAL_API_URL
+    API_URL = CLOUD_API_URL_DEFAULT  # Cambié de LOCAL_API_URL a CLOUD_API_URL_DEFAULT
 
 
 import urllib3
