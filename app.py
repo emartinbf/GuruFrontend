@@ -672,7 +672,7 @@ with tab2:
             if add_respuesta:
                 payload = {
                     "texto": new_respuesta_texto,
-                    "answerKey": new_respuesta_answer_key or None,
+                    "answerKey": (new_respuesta_answer_key or "").upper() or None,
                     "idPadre": new_respuesta_id_padre or None
                 }
                 response = api_request("POST", "/kb/respuestas", json=payload)
@@ -903,7 +903,7 @@ with tab2:
             if add_pregunta:
                 resolved_respuesta_id, resolution_error = resolve_respuesta_id(
                     new_pregunta_respuesta_id,
-                    new_pregunta_answer_key,
+                    (new_pregunta_answer_key or "").upper() or None,
                 )
                 if resolution_error:
                     st.warning(resolution_error)
@@ -1557,7 +1557,7 @@ with tab4:
                             else:
                                 st.info(reason)
 
-    with testing_tab4:
+    with testing_tab3:
         st.subheader("Detectar Duplicados")
         st.markdown("Busca respuestas similares para detectar posibles duplicados")
 
@@ -1656,7 +1656,7 @@ with tab4:
             else:
                 st.success("No se encontraron duplicados con el threshold configurado")
 
-    with testing_tab5:
+    with testing_tab4:
         st.subheader("Search Top N")
         st.markdown("Ejecuta búsqueda Top N para analizar ranking de respuestas")
 
@@ -1742,12 +1742,11 @@ with tab4:
                     [
                         {
                             "Rank": idx + 1,
-                            "Score": float(item.get("score", 0) or 0),
-                            "PreguntaId": item.get("preguntaId"),
-                            "RespuestaId": item.get("respuestaId"),
-                            "Version": item.get("version"),
-                            "TextoPregunta": item.get("textoPregunta", "")[:120],
-                            "TextoRespuesta": item.get("textoRespuesta", "")[:160],
+                            "Score": f"{float(item.get('score', 0) or 0):.4f}",
+                            "PreguntaId": item.get("preguntaId") or "-",
+                            "RespuestaId": item.get("respuestaId", "")[:36],
+                            "TextoPregunta": item.get("textoPregunta") or topn_query or "(vacío)",
+                            "TextoRespuesta": item.get("textoRespuesta", "")[:100],
                         }
                         for idx, item in enumerate(results)
                     ],
@@ -2551,7 +2550,7 @@ with testing_tab1:
                             payload["respuestaIdExistente"] = respuesta_id_existente
                         elif accion == "crear_nueva":
                             payload["nuevaRespuestaTexto"] = nueva_respuesta_texto.strip()
-                            payload["nuevaRespuestaAnswerKey"] = nueva_respuesta_key.strip() if nueva_respuesta_key.strip() else None
+                            payload["nuevaRespuestaAnswerKey"] = (nueva_respuesta_key.strip().upper() if nueva_respuesta_key.strip() else None)
                         elif accion == "descartar":
                             payload["observaciones"] = observaciones.strip()
 
