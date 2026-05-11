@@ -496,6 +496,11 @@ with tab1:
         if result["type"] == "ok":
             data = result["data"]
             debug_data = data.get('debug', {})
+            score_obtenido = data.get("score")
+            if score_obtenido is None:
+                score_obtenido = debug_data.get("score")
+            if score_obtenido is None:
+                score_obtenido = debug_data.get("confidence")
             st.success(data['answer'])
             
             # ✅ BOTONES DE FEEDBACK
@@ -576,7 +581,7 @@ with tab1:
                     st.write("**Version:**", data.get("version") or "N/A")
                     st.write("**Threshold:**", data.get("threshold") if data.get("threshold") is not None else "N/A")
                 with detail_col2:
-                    st.write("**Score:**", data.get("score") if data.get("score") is not None else "N/A")
+                    st.write("**Score obtenido:**", score_obtenido if score_obtenido is not None else "N/A")
                     st.write("**Latency (ms):**", data.get("latencyMs") if data.get("latencyMs") is not None else "N/A")
                     st.write("**Cache Hit:**", "Sí" if data.get("cacheHit") else "No")
                 with detail_col3:
@@ -2335,23 +2340,39 @@ with tab3:
 
 with testing_tab1:
     st.subheader("Cola de revisión")
-    st.caption("Vista unificada de todos los ítems pendientes de revisión: sin respuesta, respuestas con bajo score y feedback negativo del usuario.")
+    st.caption("Muestreo estratificado de ítems pendientes de revisión según segmentación de riesgo.")
 
-    # Leyenda de símbolos
-    with st.expander("ℹ️ Significado de símbolos", expanded=False):
-        st.markdown("""
-        **Estado unificado (lado izquierdo del título):**
-        - 🔴 **Rojo**: Feedback negativo del usuario O Sin respuesta (no_match)
-        - 🟡 **Amarillo**: Score bajo (below_threshold) sin feedback negativo
-        - 🟢 **Verde**: Match sin feedback negativo
-        """)
+    # Tabla de segmentación
+    st.markdown("**Segmentación de Riesgo**")
+    segmentation_data = [
+        {"Segmento": "🔴 Alto", "Porcentaje": "60%", "Criterio": "Feedback negativo OR no_match OR score < 0.70"},
+        {"Segmento": "🟡 Medio", "Porcentaje": "30%", "Criterio": "below_threshold con score >= 0.70"},
+        {"Segmento": "🟢 Bajo", "Porcentaje": "10%", "Criterio": "match / score alto"},
+    ]
+    st.dataframe(segmentation_data, use_container_width=True, hide_index=True)
+
+    st.markdown("---")
+
+    # Input y botón de muestreo
+    st.markdown("**Generar Muestreo**")
+    sample_col1, sample_col2 = st.columns([1, 1])
+    with sample_col1:
+        sample_count = st.number_input(
+            "Cantidad de ítems a muestrear",
+            min_value=1,
+            max_value=500,
+            value=20,
+            step=1,
+            key="review_sample_count"
+        )
+    with sample_col2:
+        st.write("")
+        generar_muestreo = st.button("Generar muestreo", type="primary", key="btn_generar_muestreo_revision")
 
     if "review_queue" not in st.session_state:
         st.session_state.review_queue = []
     if "review_queue_loaded" not in st.session_state:
         st.session_state.review_queue_loaded = False
-    if "review_queue_page" not in st.session_state:
-        st.session_state.review_queue_page = 1
     if "review_resolved_message" not in st.session_state:
         st.session_state.review_resolved_message = None
 
@@ -2361,83 +2382,15 @@ with testing_tab1:
         st.success(resolved_msg)
         st.session_state.review_resolved_message = None
 
-    # Barra de filtros
-    st.markdown("**Filtros**")
-    filter_cols = st.columns([2, 2, 2, 2])
-    with filter_cols[0]:
-        filter_resultado = st.selectbox(
-            "Resultado",
-            ["Todos", "Sin respuesta", "Score bajo", "Match"],
-            key="review_resultado_filter"
-        )
-    with filter_cols[1]:
-        filter_estado = st.selectbox(
-            "Estado",
-            ["Todos", "Pendiente", "Resuelta"],
-            index=1,
-            key="review_estado_filter"
-        )
-    with filter_cols[2]:
-        filter_fecha_from = st.date_input(
-            "Desde",
-            value=datetime.now().date() - timedelta(days=7),
-            key="review_fecha_from"
-        )
-    with filter_cols[3]:
-        filter_fecha_to = st.date_input(
-            "Hasta",
-            value=datetime.now().date(),
-            key="review_fecha_to"
-        )
-
-    search_cols = st.columns([4, 1])
-    with search_cols[0]:
-        filter_busqueda = st.text_input(
-            "Búsqueda por texto en query",
-            placeholder="Buscar palabra en la pregunta...",
-            key="review_search"
-        )
-    with search_cols[1]:
-        st.write("")
-        cargar_cola = st.button("Cargar cola", type="primary", key="btn_cargar_cola_revision")
-
-    if cargar_cola or not st.session_state.review_queue_loaded:
-        # Construir parámetros
-        params = {
-            "page": st.session_state.review_queue_page,
-            "pageSize": 20,
-        }
-        
-        if filter_fecha_from:
-            params["from"] = datetime.combine(filter_fecha_from, time.min).isoformat()
-        if filter_fecha_to:
-            params["to"] = datetime.combine(filter_fecha_to, time.max).isoformat()
-        
-        if filter_resultado != "Todos":
-            if filter_resultado == "Sin respuesta":
-                params["resultado"] = "no_match"
-            elif filter_resultado == "Score bajo":
-                params["resultado"] = "below_threshold"
-            elif filter_resultado == "Match":
-                params["resultado"] = "match"
-        
-        if filter_estado != "Todos":
-            params["reviewStatus"] = "pendiente_revision" if filter_estado == "Pendiente" else "resuelta_con_existente,resuelta_con_nueva"
-        
-        if filter_busqueda.strip():
-            params["textSearch"] = filter_busqueda.strip()
-
-        with st.spinner("Cargando cola de revisión..."):
-            response = api_request("GET", "/qa/review-queue", params=params)
+    if generar_muestreo:
+        with st.spinner(f"Generando muestreo de {sample_count} ítems..."):
+            response = api_request("GET", "/qa/review-queue/sample", params={"count": int(sample_count)})
 
         if response and response.status_code == 200:
             payload = response.json()
-            st.session_state.review_queue = payload.get("items", [])
-            st.session_state.review_queue_page = payload.get("page", 1)
-            st.session_state.review_queue_total = payload.get("total", 0)
-            st.session_state.review_queue_total_pages = payload.get("totalPages", 0)
+            st.session_state.review_queue = payload.get("items", []) if isinstance(payload, dict) else payload
             st.session_state.review_queue_loaded = True
-            st.success(f"Cola cargada: {len(st.session_state.review_queue)} ítems")
+            st.success(f"Muestreo generado: {len(st.session_state.review_queue)} ítems")
         elif response:
             render_error_response(response)
 
@@ -2445,7 +2398,7 @@ with testing_tab1:
     review_items = st.session_state.get("review_queue", []) or []
     
     if not review_items:
-        st.info("No hay ítems en la cola de revisión con los filtros aplicados.")
+        st.info("Genera un muestreo para ver los ítems pendientes de revisión.")
     else:
         # Catálogo de respuestas para resoluciones
         respuestas_catalog = load_respuestas_catalog()
@@ -2611,26 +2564,6 @@ with testing_tab1:
                             st.rerun()
                         elif response:
                             render_error_response(response)
-
-        # Paginación
-        st.markdown("---")
-        total_pages = st.session_state.get("review_queue_total_pages", 1)
-        current_page = st.session_state.get("review_queue_page", 1)
-        
-        if total_pages > 1:
-            pag_cols = st.columns([1, 4, 1])
-            with pag_cols[0]:
-                if current_page > 1 and st.button("← Anterior", key="btn_pag_prev"):
-                    st.session_state.review_queue_page -= 1
-                    st.session_state.review_queue_loaded = False
-                    st.rerun()
-            with pag_cols[1]:
-                st.caption(f"Página {current_page} de {total_pages}")
-            with pag_cols[2]:
-                if current_page < total_pages and st.button("Siguiente →", key="btn_pag_next"):
-                    st.session_state.review_queue_page += 1
-                    st.session_state.review_queue_loaded = False
-                    st.rerun()
 
 with testing_tab2:
     st.header("Regression DataSet")
