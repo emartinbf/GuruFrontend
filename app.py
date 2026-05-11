@@ -2469,6 +2469,7 @@ with testing_tab1:
                 st.markdown("---")
                 st.markdown("**Resolver**")
 
+                # Radio button fuera del form para que rerune y muestre/oculte campos dinámicamente
                 accion = st.radio(
                     "Acción",
                     ["usar_existente", "crear_nueva", "descartar"],
@@ -2481,7 +2482,7 @@ with testing_tab1:
                     key=f"review_accion_{idx}"
                 )
 
-                # Campos según la acción
+                # Campos según la acción (fuera del form para que se actualicen dinámicamente)
                 pregunta_texto = st.text_input(
                     "Texto de pregunta (opcional)",
                     value=query,
@@ -2529,7 +2530,7 @@ with testing_tab1:
                     key=f"review_regression_{idx}"
                 )
 
-                if st.button("Guardar resolución", key=f"review_guardar_{idx}"):
+                if st.button("Guardar resolución", type="primary", key=f"review_guardar_{idx}"):
                     # Validar
                     if accion == "usar_existente" and not respuesta_id_existente:
                         st.error("Selecciona una respuesta existente")
