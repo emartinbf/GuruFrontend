@@ -24,18 +24,20 @@ def is_streamlit_cloud() -> bool:
         os.getenv("IS_STREAMLIT_CLOUD", ""),
         os.getenv("STREAMLIT_RUNTIME", ""),
         os.getenv("STREAMLIT_ENV", ""),
+        os.getenv("STREAMLIT_CLOUD", ""),  # Agregado
     ]
     return any(str(marker).strip().lower() in ("1", "true", "yes", "cloud") for marker in cloud_markers)
 
 
 configured_api_url = os.getenv("API_URL") or st.secrets.get("api_url")
 
-if configured_api_url:
-    API_URL = configured_api_url
-    RUNTIME_ENV = "Cloud" if is_streamlit_cloud() else "Configured"
-elif is_streamlit_cloud():
+# Si estamos en Streamlit Cloud, usar la URL de cloud por defecto a menos que esté configurado algo específico
+if is_streamlit_cloud():
     RUNTIME_ENV = "Cloud"
-    API_URL = CLOUD_API_URL_DEFAULT
+    API_URL = configured_api_url or CLOUD_API_URL_DEFAULT
+elif configured_api_url:
+    RUNTIME_ENV = "Configured"
+    API_URL = configured_api_url
 else:
     RUNTIME_ENV = "Local"
     API_URL = LOCAL_API_URL
@@ -453,6 +455,16 @@ def build_feedback_tracking_key(query_history_id=None, query_hash=None, original
 
 st.title("Galicia Guru - Sistema de Conocimiento")
 st.markdown("---")
+
+# Debug info
+with st.expander("ℹ️ Configuración (debug)", expanded=False):
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.caption(f"**Runtime:** {RUNTIME_ENV}")
+    with col2:
+        st.caption(f"**API URL:** `{API_URL}`")
+    with col3:
+        st.caption(f"**Is Cloud:** {is_streamlit_cloud()}")
 
 tab1, tab2, tab3, tab4 = st.tabs([
     "🔎 Busqueda",
