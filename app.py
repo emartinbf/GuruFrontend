@@ -11,7 +11,7 @@ import streamlit.components.v1 as components
 st.set_page_config(page_title="Galicia Guru", page_icon=":robot:", layout="wide")
 
 LOCAL_API_URL = "https://localhost:44321/api"
-CLOUD_API_URL_DEFAULT = "https://poc-guru-hdf0gvb2a2f4ehgf.eastus-01.azurewebsites.net/"
+CLOUD_API_URL_DEFAULT = "https://poc-guru-hdf0gvb2a2f4ehgf.eastus-01.azurewebsites.net/api"
 
 
 def is_streamlit_cloud() -> bool:
@@ -30,17 +30,14 @@ def is_streamlit_cloud() -> bool:
 
 configured_api_url = os.getenv("API_URL") or st.secrets.get("api_url")
 
+# Prioridad: 1) Variable de entorno/secrets, 2) Detectar si está en Cloud, 3) Default a Cloud
 if configured_api_url:
     API_URL = configured_api_url
-    RUNTIME_ENV = "Cloud" if is_streamlit_cloud() else "Configured"
-elif is_streamlit_cloud():
+    RUNTIME_ENV = "Configured"
+else:
+    # Si no hay configuración, usar Cloud por defecto (más seguro para producción)
     RUNTIME_ENV = "Cloud"
     API_URL = CLOUD_API_URL_DEFAULT
-else:
-    # Default a CLOUD_API_URL si no hay config y no está en cloud detectado
-    # (fallback seguro para Streamlit Cloud que no detecta correctamente)
-    RUNTIME_ENV = "Local"
-    API_URL = CLOUD_API_URL_DEFAULT  # Cambié de LOCAL_API_URL a CLOUD_API_URL_DEFAULT
 
 
 import urllib3
