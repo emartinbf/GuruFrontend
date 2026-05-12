@@ -450,7 +450,8 @@ def build_feedback_tracking_key(query_history_id=None, query_hash=None, original
         return f"qhsh:{(query_hash or '').strip()}"
     return f"q:{(original_query or '').strip().lower()}"
 
-st.title("Galicia Guru - Sistema de Conocimiento")
+st.title("🧠 Galicia Guru - Sistema de Conocimiento")
+
 st.markdown("---")
 
 tab1, tab2, tab3, tab4 = st.tabs([
