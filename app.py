@@ -2014,16 +2014,36 @@ with tab3:
 
             positive_feedbacks = int(ops_feedback_stats.get("positiveFeedbacks", 0))
             negative_feedbacks = int(ops_feedback_stats.get("negativeFeedbacks", 0))
+            total_feedbacks = positive_feedbacks + negative_feedbacks
+            
+            # Calcular porcentajes
+            feedback_pct = (
+                (total_feedbacks / total_searches) * 100
+                if total_searches > 0
+                else 0.0
+            )
+            positive_feedback_pct = (
+                (positive_feedbacks / total_feedbacks) * 100
+                if total_feedbacks > 0
+                else 0.0
+            )
+            negative_feedback_pct = (
+                (negative_feedbacks / total_feedbacks) * 100
+                if total_feedbacks > 0
+                else 0.0
+            )
 
-            k1, k2, k3, k4 = st.columns(4)
+            k1, k2, k3, k4, k5 = st.columns(5)
             with k1:
                 st.metric("Consultas totales", total_searches)
             with k2:
                 st.metric("% respondidas", f"{answered_match_pct:.2f}%")
             with k3:
-                st.metric("👍Feedback positivos", positive_feedbacks)
+                st.metric("% con feedback", f"{feedback_pct:.2f}%")
             with k4:
-                st.metric("👎Feedback negativos", negative_feedbacks)
+                st.metric("👍Feedback positivos", f"{positive_feedbacks} ({positive_feedback_pct:.1f}%)")
+            with k5:
+                st.metric("👎Feedback negativos", f"{negative_feedbacks} ({negative_feedback_pct:.1f}%)")
 
             st.markdown("---")
             c1, c2 = st.columns(2)
