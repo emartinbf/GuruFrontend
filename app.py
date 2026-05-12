@@ -1284,280 +1284,17 @@ with tab4:
     if "quality_batch_report" not in st.session_state:
         st.session_state.quality_batch_report = None
 
-    testing_tab1, testing_tab2, testing_tab3, testing_tab4, testing_tab5 = st.tabs([
+    testing_tab1, testing_tab2, testing_tab3, testing_tab4, testing_tab5, testing_tab6 = st.tabs([
         "📋 Cola de revisión",
         "🧪 Regression DataSet",
+        "🟨 Golden Dataset",
         "🔍 Detectar Duplicados",
         "🎯 Search Top N",
         "🤖 LLM Evaluator",
     ])
 
-    if False:
-        st.subheader("Golden Dataset Testing")
-        st.markdown("Ejecuta tests de regresión")
-
-        col_1, col_2, col_3 = st.columns([1, 2, 1])
-        with col_1:
-            snapshots = load_snapshots_list()
-            active_version = get_active_snapshot_version()
-            versions = [s.get("version") for s in snapshots if s.get("version")]
-            if versions:
-                try:
-                    default_idx = versions.index(active_version) if active_version in versions else 0
-                except (ValueError, IndexError):
-                    default_idx = 0
-                test_version = st.selectbox(
-                    "Versión",
-                    versions,
-                    index=default_idx,
-                    key="golden_version",
-                    format_func=lambda v: format_snapshot_option(v, active_version),
-                    help="Versión/snapshot para los tests. El activo está preseleccionado."
-                )
-            else:
-                st.warning("⚠️ No hay snapshots disponibles")
-                test_version = None
-        with col_2:
-            dataset_path = st.text_input("Dataset path (opcional)", value="", key="golden_dataset_path")
-        with col_3:
-            st.write("")
-            run_golden = st.button("Ejecutar", type="primary", key="btn_run_golden")
-
-        if run_golden:
-            params = {"version": test_version}
-            if dataset_path.strip():
-                params["datasetPath"] = dataset_path.strip()
-            with st.spinner("Ejecutando Golden Dataset..."):
-                response = api_request("POST", "/testing/run-golden-dataset", params=params)
-            if response and response.status_code == 200:
-                st.session_state.golden_report = response.json()
-                st.success("Ejecución completada")
-            elif response:
-                render_error_response(response)
-
-        report = st.session_state.get("golden_report")
-        if report:
-            total_tests = int(report.get("totalTests", 0))
-            passed = int(report.get("passed", 0))
-            failed = int(report.get("failed", 0))
-            pass_rate = float(report.get("passRate", 0))
-
-            k1, k2, k3, k4 = st.columns(4)
-            with k1:
-                st.metric("Total", total_tests)
-            with k2:
-                st.metric("Passed", passed)
-            with k3:
-                st.metric("Failed", failed)
-            with k4:
-                st.metric("Pass Rate", f"{pass_rate * 100:.1f}%")
-
-            k5, k6, k7 = st.columns(3)
-            with k5:
-                st.metric("Duración", f"{report.get('totalDurationMs', 0)} ms")
-            with k6:
-                st.metric("Score Promedio", f"{float(report.get('averageScore', 0)):.3f}")
-            with k7:
-                st.metric("Respuestas Inactivas", int(report.get("inactiveAnswersReturned", 0)))
-
-            by_category = report.get("byCategory", {})
-            if by_category:
-                st.markdown("---")
-                st.subheader("Resultados por categoría")
-                category_rows = []
-                for cat_name, cat_metrics in by_category.items():
-                    category_rows.append(
-                        {
-                            "Categoría": cat_name,
-                            "Passed": int(cat_metrics.get("passed", 0)),
-                            "Failed": int(cat_metrics.get("failed", 0)),
-                            "Pass Rate (%)": float(cat_metrics.get("passRate", 0)) * 100,
-                            "Score Promedio": float(cat_metrics.get("averageScore", 0)),
-                        }
-                    )
-                st.dataframe(category_rows, use_container_width=True)
-                st.bar_chart(
-                    [{"Categoría": r["Categoría"], "Passed": r["Passed"], "Failed": r["Failed"]} for r in category_rows],
-                    x="Categoría",
-                    y=["Passed", "Failed"],
-                    use_container_width=True,
-                )
-
-            failures = report.get("failures", [])
-            st.markdown("---")
-            if failures:
-                st.subheader(f"Failures ({len(failures)})")
-                for failure in failures:
-                    title = f"{failure.get('testId', 'N/A')} - {failure.get('query', '')[:80]}"
-                    with st.expander(title):
-                        c1, c2 = st.columns(2)
-                        with c1:
-                            st.write("**Query:**", failure.get("query"))
-                            st.write("**Categoría:**", failure.get("category"))
-                            st.write("**Expected Key:**", failure.get("expectedAnswerKey"))
-                            st.write("**Actual Key:**", failure.get("actualAnswerKey") or "N/A")
-                            st.write("**Actual Answer ID:**", failure.get("actualAnswerId") or "N/A")
-                        with c2:
-                            st.write("**Expected Score:**", f">= {failure.get('expectedMinScore')}")
-                            st.write("**Actual Score:**", f"{float(failure.get('actualScore', 0)):.3f}")
-                            st.write("**Duración:**", f"{failure.get('durationMs', 0)} ms")
-                            st.write("**Activa:**", "Sí" if failure.get("isActiveAnswer") else "No")
-                        st.error(failure.get("failureReason") or "Sin detalle")
-            else:
-                st.success("Todos los tests pasaron")
-
-    if False:
-        st.subheader("Comparar Snapshots")
-        st.markdown("Compara dos versiones (A vs B)")
-
-        snapshots = load_snapshots_list()
-        active_version = get_active_snapshot_version()
-        versions = [s.get("version") for s in snapshots if s.get("version")]
-
-        c1, c2, c3 = st.columns([2, 2, 2])
-        with c1:
-            if versions:
-                try:
-                    default_idx_a = versions.index(active_version) if active_version in versions else 0
-                except (ValueError, IndexError):
-                    default_idx_a = 0
-                snapshot_a = st.selectbox(
-                    "Snapshot A (Baseline)",
-                    versions,
-                    index=default_idx_a,
-                    key="snap_a",
-                    format_func=lambda v: format_snapshot_option(v, active_version),
-                    help="Versión baseline para comparación"
-                )
-            else:
-                st.warning("⚠️ No hay snapshots disponibles")
-                snapshot_a = None
-        with c2:
-            if versions:
-                try:
-                    default_idx_b = min(1, len(versions) - 1) if len(versions) > 1 else 0
-                except (ValueError, IndexError):
-                    default_idx_b = 0
-                snapshot_b = st.selectbox(
-                    "Snapshot B (Candidate)",
-                    versions,
-                    index=default_idx_b,
-                    key="snap_b",
-                    format_func=lambda v: format_snapshot_option(v, active_version),
-                    help="Versión candidata para comparación"
-                )
-            else:
-                snapshot_b = None
-        with c3:
-            compare_dataset_path = st.text_input("Dataset path (opcional)", value="", key="compare_dataset_path")
-
-        if st.button("Comparar", type="primary", key="btn_compare_snapshots"):
-            payload = {"snapshotA": snapshot_a, "snapshotB": snapshot_b}
-            if compare_dataset_path.strip():
-                payload["datasetPath"] = compare_dataset_path.strip()
-            with st.spinner("Comparando snapshots..."):
-                response = api_request("POST", "/testing/compare-snapshots", json=payload)
-            if response and response.status_code == 200:
-                st.session_state.snapshot_comparison = response.json()
-                st.success("Comparación completada")
-            elif response:
-                render_error_response(response)
-
-        comparison = st.session_state.get("snapshot_comparison")
-        if comparison:
-            recommendation = comparison.get("recommendation", "")
-            recommendation_lc = recommendation.lower()
-            if "do not" in recommendation_lc or "no deploy" in recommendation_lc:
-                st.error(f"Recomendación: {recommendation}")
-            elif "deploy" in recommendation_lc:
-                st.success(f"Recomendación: {recommendation}")
-            else:
-                st.warning(f"Recomendación: {recommendation}")
-
-            snap_a_data = comparison.get("snapshotA", {})
-            snap_b_data = comparison.get("snapshotB", {})
-
-            st.markdown("---")
-            col_a, col_b = st.columns(2)
-            with col_a:
-                st.markdown(f"**{snap_a_data.get('version', 'A')} (Baseline)**")
-                st.metric("Pass Rate", f"{float(snap_a_data.get('passRate', 0)) * 100:.1f}%")
-                st.metric("Score Promedio", f"{float(snap_a_data.get('averageScore', 0)):.3f}")
-                st.metric("Passed", int(snap_a_data.get("passed", 0)))
-                st.metric("Failed", int(snap_a_data.get("failed", 0)))
-            with col_b:
-                st.markdown(f"**{snap_b_data.get('version', 'B')} (Candidate)**")
-                pass_rate_delta = (float(snap_b_data.get("passRate", 0)) - float(snap_a_data.get("passRate", 0))) * 100
-                score_delta = float(snap_b_data.get("averageScore", 0)) - float(snap_a_data.get("averageScore", 0))
-                st.metric("Pass Rate", f"{float(snap_b_data.get('passRate', 0)) * 100:.1f}%", delta=f"{pass_rate_delta:+.1f}%")
-                st.metric("Score Promedio", f"{float(snap_b_data.get('averageScore', 0)):.3f}", delta=f"{score_delta:+.3f}")
-                st.metric("Passed", int(snap_b_data.get("passed", 0)), delta=int(snap_b_data.get("passed", 0)) - int(snap_a_data.get("passed", 0)))
-                st.metric("Failed", int(snap_b_data.get("failed", 0)), delta=int(snap_b_data.get("failed", 0)) - int(snap_a_data.get("failed", 0)), delta_color="inverse")
-
-            improvements = int(comparison.get("improvements", 0))
-            regressions = int(comparison.get("regressions", 0))
-            unchanged = int(comparison.get("unchanged", 0))
-
-            st.markdown("---")
-            s1, s2, s3 = st.columns(3)
-            with s1:
-                st.metric("Improvements", improvements)
-            with s2:
-                st.metric("Regressions", regressions)
-            with s3:
-                st.metric("Unchanged", unchanged)
-
-            st.bar_chart(
-                [
-                    {"Tipo": "Improvements", "Cantidad": improvements},
-                    {"Tipo": "Regressions", "Cantidad": regressions},
-                    {"Tipo": "Unchanged", "Cantidad": unchanged},
-                ],
-                x="Tipo",
-                y="Cantidad",
-                use_container_width=True,
-            )
-
-            changes = comparison.get("changes", [])
-            if changes:
-                st.markdown("---")
-                st.subheader("Cambios detallados")
-                change_filter = st.selectbox(
-                    "Filtrar por tipo",
-                    ["Todos", "IMPROVED", "REGRESSION", "UNCHANGED"],
-                    key="change_filter",
-                )
-                filtered_changes = changes
-                if change_filter != "Todos":
-                    filtered_changes = [c for c in changes if c.get("changeType") == change_filter]
-
-                for change in filtered_changes:
-                    change_type = change.get("changeType", "UNCHANGED")
-                    icon = "🟢" if change_type == "IMPROVED" else "🔴" if change_type == "REGRESSION" else "🟡"
-                    title = f"{icon} {change.get('testId', 'N/A')} - {change.get('query', '')[:80]}"
-                    with st.expander(title):
-                        left, right = st.columns(2)
-                        with left:
-                            st.write(f"**{snap_a_data.get('version', 'A')}:**")
-                            st.write("Answer Key:", change.get("versionAAnswerKey") or "N/A")
-                            st.write("Answer ID:", change.get("versionAAnswerId") or "N/A")
-                            st.write("Score:", f"{float(change.get('versionAScore', 0)):.3f}")
-                        with right:
-                            st.write(f"**{snap_b_data.get('version', 'B')}:**")
-                            st.write("Answer Key:", change.get("versionBAnswerKey") or "N/A")
-                            st.write("Answer ID:", change.get("versionBAnswerId") or "N/A")
-                            st.write("Score:", f"{float(change.get('versionBScore', 0)):.3f}")
-
-                        reason = change.get("reason")
-                        if reason:
-                            if change_type == "IMPROVED":
-                                st.success(reason)
-                            elif change_type == "REGRESSION":
-                                st.error(reason)
-                            else:
-                                st.info(reason)
-
-    with testing_tab3:
+    
+    with testing_tab4:
         st.subheader("Detectar Duplicados")
         st.markdown("Busca respuestas similares para detectar posibles duplicados")
 
@@ -1656,7 +1393,7 @@ with tab4:
             else:
                 st.success("No se encontraron duplicados con el threshold configurado")
 
-    with testing_tab4:
+    with testing_tab5:
         st.subheader("Search Top N")
         st.markdown("Ejecuta búsqueda Top N para analizar ranking de respuestas")
 
@@ -1755,7 +1492,7 @@ with tab4:
             else:
                 st.info("No hubo resultados para esa query/topN")
 
-    with testing_tab5:
+    with testing_tab6:
         st.subheader("LLM Evaluator")
         st.markdown("Evalúa calidad de una respuesta con LLM-as-a-judge")
 
@@ -1827,6 +1564,108 @@ with tab4:
             st.info(eval_result.get("reason", "Sin razón"))
             if eval_result.get("suggestedImprovement"):
                 st.warning(f"Mejora sugerida: {eval_result.get('suggestedImprovement')}")
+
+    with testing_tab3:
+        st.subheader("Golden Dataset")
+        st.markdown("Dataset con tests predefinidos para validar la calidad del sistema")
+
+        if "golden_dataset" not in st.session_state:
+            st.session_state.golden_dataset = None
+        if "golden_dataset_loaded" not in st.session_state:
+            st.session_state.golden_dataset_loaded = False
+
+        if st.button("📥 Cargar Golden Dataset", type="primary", key="btn_load_golden_dataset"):
+            with st.spinner("Cargando Golden Dataset..."):
+                response = api_request("GET", "/goldendataset")
+            
+            if response and response.status_code == 200:
+                st.session_state.golden_dataset = response.json()
+                st.session_state.golden_dataset_loaded = True
+                st.success("✅ Golden Dataset cargado exitosamente")
+            elif response:
+                render_error_response(response)
+
+        golden_dataset = st.session_state.get("golden_dataset")
+        
+        if golden_dataset:
+            # Información general del dataset
+            version = golden_dataset.get("version", "N/A")
+            description = golden_dataset.get("description", "")
+            tests = golden_dataset.get("tests", []) or []
+
+            st.markdown("---")
+           
+            if tests:
+                # Preparar datos para la tabla
+                table_data = []
+                for test in tests:
+                    test_id = test.get("id", "N/A")
+                    category = test.get("category", "N/A")
+                    query = test.get("query", "")
+                    expected_key = test.get("expectedAnswerKey", "N/A")
+                    min_score = test.get("minScore", 0.85)
+                    test_desc = test.get("description", "")
+                    variations = test.get("variations", []) or []
+
+                    table_data.append({
+                        "ID": test_id[:20] if len(test_id) > 20 else test_id,
+                        "Categoría": category,
+                        "Query": query[:80] if len(query) > 80 else query,
+                        "Answer Key": expected_key,
+                        "Min Score": f"{min_score:.2f}",
+                        "Variaciones": len(variations),
+                        "Descripción": test_desc[:50] if len(test_desc) > 50 else test_desc,
+                    })
+
+                st.dataframe(table_data, use_container_width=True)
+
+                st.markdown("---")
+                st.markdown("**Detalles de Tests**")
+                
+                # Filter por categoría
+                categories = sorted(set(t.get("category") for t in tests if t.get("category")))
+                if categories:
+                    filter_category = st.selectbox(
+                        "Filtrar por categoría",
+                        ["Todos"] + categories,
+                        key="golden_dataset_filter_category"
+                    )
+                    
+                    filtered_tests = tests
+                    if filter_category != "Todos":
+                        filtered_tests = [t for t in tests if t.get("category") == filter_category]
+
+                    for test in filtered_tests:
+                        test_id = test.get("id", "N/A")
+                        category = test.get("category", "N/A")
+                        query = test.get("query", "")
+                        expected_key = test.get("expectedAnswerKey", "N/A")
+                        min_score = test.get("minScore", 0.85)
+                        test_desc = test.get("description", "")
+                        variations = test.get("variations", []) or []
+
+                        with st.expander(f"🧪 {test_id} - {query[:60]}..."):
+                            col_test1, col_test2 = st.columns(2)
+                            with col_test1:
+                                st.write(f"**Categoría:** {category}")
+                                st.write(f"**Answer Key:** `{expected_key}`")
+                                st.write(f"**Min Score:** {min_score}")
+                            with col_test2:
+                                st.write(f"**Query completa:**")
+                                st.code(query)
+                            
+                            if test_desc:
+                                st.write(f"**Descripción:** {test_desc}")
+                            
+                            if variations:
+                                st.write(f"**Variaciones ({len(variations)}):**")
+                                for var in variations:
+                                    st.caption(f"• {var}")
+            else:
+                st.info("No hay tests en el Golden Dataset")
+        else:
+            if st.session_state.golden_dataset_loaded:
+                st.warning("No se pudo cargar el Golden Dataset")
 
     if False:
         st.subheader("Estadísticas Feedback")
@@ -2536,13 +2375,6 @@ with testing_tab1:
                         placeholder="EJ: SALDO_CONSULTA"
                     )
 
-                observaciones = st.text_area(
-                    "Observaciones (opcional)",
-                    key=f"review_obs_{idx}",
-                    height=60,
-                    placeholder="Notas del revisor..."
-                )
-
                 agregar_regression = st.checkbox(
                     "Agregar al dataset de regresión",
                     value=True,
@@ -2570,8 +2402,7 @@ with testing_tab1:
                             payload["nuevaRespuestaTexto"] = nueva_respuesta_texto.strip()
                             payload["nuevaRespuestaAnswerKey"] = (nueva_respuesta_key.strip().upper() if nueva_respuesta_key.strip() else None)
                         elif accion == "descartar":
-                            # Si no hay observaciones, enviar "ok" por defecto
-                            payload["observaciones"] = observaciones.strip() or "ok"
+                            payload["observaciones"] = "ok"
 
                         # Enviar
                         with st.spinner("Guardando resolución..."):
