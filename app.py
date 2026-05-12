@@ -2028,11 +2028,11 @@ with tab3:
             st.markdown("---")
             c1, c2 = st.columns(2)
             with c1:
-                st.markdown("**Requests por hora**")
+                st.markdown("**Consultas por hora**")
                 if hourly_requests_series:
                     st.line_chart(hourly_requests_series, x="hour", y="requests", use_container_width=True)
                 else:
-                    st.info("Sin datos suficientes para requests por hora.")
+                    st.info("Sin datos suficientes para consultas por hora.")
 
             with c2:
                 st.markdown("**Distribución de resultados**")
@@ -2535,8 +2535,6 @@ with testing_tab1:
                         st.error("Selecciona una respuesta existente")
                     elif accion == "crear_nueva" and not nueva_respuesta_texto.strip():
                         st.error("Completa el texto de la nueva respuesta")
-                    elif accion == "descartar" and not observaciones.strip():
-                        st.error("Completa las observaciones para descartar")
                     else:
                         # Construir payload
                         payload = {
@@ -2552,17 +2550,21 @@ with testing_tab1:
                             payload["nuevaRespuestaTexto"] = nueva_respuesta_texto.strip()
                             payload["nuevaRespuestaAnswerKey"] = (nueva_respuesta_key.strip().upper() if nueva_respuesta_key.strip() else None)
                         elif accion == "descartar":
-                            payload["observaciones"] = observaciones.strip()
+                            # Si no hay observaciones, enviar "ok" por defecto
+                            payload["observaciones"] = observaciones.strip() or "ok"
 
                         # Enviar
                         with st.spinner("Guardando resolución..."):
                             response = api_request("POST", f"/qa/review-queue/{item_id}/resolve", json=payload)
 
                         if response and response.status_code in (200, 201):
-                            st.session_state.review_resolved_message = "✅ Resolución guardada correctamente"
-                            st.session_state.review_queue_loaded = False
+                            # Eliminar del listado
+                            updated_queue = [item for item in st.session_state.review_queue if item.get("id") != item_id]
+                            st.session_state.review_queue = updated_queue
+                            st.success("✅ Resolución guardada correctamente")
                             st.rerun()
                         elif response:
+                            st.error("❌ Error al guardar la resolución")
                             render_error_response(response)
 
 with testing_tab2:
