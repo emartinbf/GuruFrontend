@@ -1286,7 +1286,7 @@ with tab4:
 
     testing_tab1, testing_tab2, testing_tab3, testing_tab4, testing_tab5, testing_tab6 = st.tabs([
         "📋 Cola de revisión",
-        "🧪 Regression DataSet",
+        "🧪 Regression Dataset",
         "🟨 Golden Dataset",
         "🔍 Detectar Duplicados",
         "🎯 Search Top N",
@@ -1571,29 +1571,22 @@ with tab4:
 
         if "golden_dataset" not in st.session_state:
             st.session_state.golden_dataset = None
-        if "golden_dataset_loaded" not in st.session_state:
-            st.session_state.golden_dataset_loaded = False
+        if "golden_dataset_auto_loaded" not in st.session_state:
+            st.session_state.golden_dataset_auto_loaded = False
 
-        if st.button("📥 Cargar Golden Dataset", type="primary", key="btn_load_golden_dataset"):
-            with st.spinner("Cargando Golden Dataset..."):
-                response = api_request("GET", "/goldendataset")
-            
+        # Auto-load Golden Dataset on first entry
+        if not st.session_state.golden_dataset_auto_loaded:
+            response = api_request("GET", "/goldendataset")
             if response and response.status_code == 200:
                 st.session_state.golden_dataset = response.json()
-                st.session_state.golden_dataset_loaded = True
-                st.success("✅ Golden Dataset cargado exitosamente")
+                st.session_state.golden_dataset_auto_loaded = True
             elif response:
                 render_error_response(response)
 
         golden_dataset = st.session_state.get("golden_dataset")
         
         if golden_dataset:
-            # Información general del dataset
-            version = golden_dataset.get("version", "N/A")
-            description = golden_dataset.get("description", "")
             tests = golden_dataset.get("tests", []) or []
-
-            st.markdown("---")
            
             if tests:
                 # Preparar datos para la tabla
@@ -1618,53 +1611,10 @@ with tab4:
                     })
 
                 st.dataframe(table_data, use_container_width=True)
-
-                st.markdown("---")
-                st.markdown("**Detalles de Tests**")
-                
-                # Filter por categoría
-                categories = sorted(set(t.get("category") for t in tests if t.get("category")))
-                if categories:
-                    filter_category = st.selectbox(
-                        "Filtrar por categoría",
-                        ["Todos"] + categories,
-                        key="golden_dataset_filter_category"
-                    )
-                    
-                    filtered_tests = tests
-                    if filter_category != "Todos":
-                        filtered_tests = [t for t in tests if t.get("category") == filter_category]
-
-                    for test in filtered_tests:
-                        test_id = test.get("id", "N/A")
-                        category = test.get("category", "N/A")
-                        query = test.get("query", "")
-                        expected_key = test.get("expectedAnswerKey", "N/A")
-                        min_score = test.get("minScore", 0.85)
-                        test_desc = test.get("description", "")
-                        variations = test.get("variations", []) or []
-
-                        with st.expander(f"🧪 {test_id} - {query[:60]}..."):
-                            col_test1, col_test2 = st.columns(2)
-                            with col_test1:
-                                st.write(f"**Categoría:** {category}")
-                                st.write(f"**Answer Key:** `{expected_key}`")
-                                st.write(f"**Min Score:** {min_score}")
-                            with col_test2:
-                                st.write(f"**Query completa:**")
-                                st.code(query)
-                            
-                            if test_desc:
-                                st.write(f"**Descripción:** {test_desc}")
-                            
-                            if variations:
-                                st.write(f"**Variaciones ({len(variations)}):**")
-                                for var in variations:
-                                    st.caption(f"• {var}")
             else:
                 st.info("No hay tests en el Golden Dataset")
         else:
-            if st.session_state.golden_dataset_loaded:
+            if st.session_state.golden_dataset_auto_loaded:
                 st.warning("No se pudo cargar el Golden Dataset")
 
     if False:
@@ -2419,8 +2369,7 @@ with testing_tab1:
                             render_error_response(response)
 
 with testing_tab2:
-    st.header("Regression DataSet")
-    st.caption("Listado y desactivación de entradas. Alta y edición no disponibles por ahora.")
+    st.header("Regression Dataset")
 
     if "regression_entries_payload" not in st.session_state:
         st.session_state.regression_entries_payload = {"total": 0, "entries": []}
@@ -2443,7 +2392,7 @@ with testing_tab2:
         elif response:
             render_error_response(response)
 
-    if st.button("Cargar Regression DataSet", type="primary", key="btn_load_regression_entries"):
+    if st.button("Actualizar", type="primary", key="btn_load_regression_entries"):
         response = api_request("GET", "/Regression/entries")
         if response and response.status_code == 200:
             payload = response.json() or {}
@@ -2454,7 +2403,7 @@ with testing_tab2:
                 "total": int(total),
                 "entries": entries,
             }
-            st.success("Regression DataSet cargado")
+            st.success("Regression Dataset cargado")
         elif response:
             render_error_response(response)
 
@@ -2463,9 +2412,8 @@ with testing_tab2:
     regression_total = int(regression_payload.get("total", len(regression_entries)) or 0)
 
     if not regression_entries:
-        st.info("No hay registros cargados. Presiona 'Cargar Regression DataSet'.")
+        st.info("No hay registros cargados. Presiona 'Cargar Regression Dataset'.")
     else:
-        st.metric("Total", regression_total)
 
         st.markdown("---")
         h1, h2, h3 = st.columns([4, 6, 2])
