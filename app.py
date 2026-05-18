@@ -577,12 +577,12 @@ with tab1:
             with st.expander("Ver detalle del resultado"):
                 detail_col1, detail_col2, detail_col3 = st.columns(3)
                 with detail_col1:
-                    st.write("**Answer ID:**", data.get("answerId") or "N/A")
-                    st.write("**Version:**", data.get("version") or "N/A")
-                    st.write("**Threshold:**", data.get("threshold") if data.get("threshold") is not None else "N/A")
+                    st.write("**Respuesta ID:**", data.get("answerId") or "N/A")
+                    st.write("**Versión:**", data.get("version") or "N/A")
+                    st.write("**Umbral de confianza:**", data.get("threshold") if data.get("threshold") is not None else "N/A")
                 with detail_col2:
-                    st.write("**Score obtenido:**", score_obtenido if score_obtenido is not None else "N/A")
-                    st.write("**Latency (ms):**", data.get("latencyMs") if data.get("latencyMs") is not None else "N/A")
+                    st.write("**Puntuación obtenida:**", score_obtenido if score_obtenido is not None else "N/A")
+                    st.write("**Latencia (ms):**", data.get("latencyMs") if data.get("latencyMs") is not None else "N/A")
                     st.write("**Cache Hit:**", "Sí" if data.get("cacheHit") else "No")
                 with detail_col3:
                     st.write("**Query Hash:**", debug_data.get("queryHash") or "N/A")
@@ -649,9 +649,9 @@ with tab2:
                 [
                     {
                         "id": r.get("id"),
-                        "answerKey": r.get("answerKey", "N/A"),
-                        "texto": r.get("texto")[:100] + "..." if len(r.get("texto", "")) > 100 else r.get("texto"),
-                        "activa": r.get("activa")
+                        "Respuesta Key": r.get("answerKey", "N/A"),
+                        "Texto": r.get("texto")[:100] + "..." if len(r.get("texto", "")) > 100 else r.get("texto"),
+                        "Activa": r.get("activa")
                     }
                     for r in st.session_state.get("respuestas", [])
                 ],
@@ -662,7 +662,7 @@ with tab2:
         st.markdown("**Agregar respuesta**")
         with st.form("form_add_respuesta"):
             new_respuesta_answer_key = st.text_input(
-                "Answer Key (opcional)",
+                "Respuesta Key (opcional)",
                 placeholder="SALDO_CONSULTA",
                 help="Código inmutable para identificar la respuesta. Si no se especifica, se genera automáticamente.",
             )
@@ -671,14 +671,14 @@ with tab2:
             add_respuesta = st.form_submit_button("Agregar respuesta")
             if add_respuesta:
                 payload = {
-                    "texto": new_respuesta_texto,
-                    "answerKey": (new_respuesta_answer_key or "").upper() or None,
+                    "Texto": new_respuesta_texto,
+                    "RespuestaKey": (new_respuesta_answer_key or "").upper() or None,
                     "idPadre": new_respuesta_id_padre or None
                 }
                 response = api_request("POST", "/kb/respuestas", json=payload)
                 if response and response.status_code == 200:
                     result = response.json()
-                    st.success(f"Respuesta creada - AnswerKey: {result.get('answerKey', 'N/A')}")
+                    st.success(f"Respuesta creada - RespuestaKey: {result.get('RespuestaKey', 'N/A')}")
                     st.json(result)
                     st.rerun()
                 elif response:
@@ -690,7 +690,7 @@ with tab2:
             st.session_state["select_edit_respuesta"] = ""
         respuesta_options = st.session_state.get("respuestas", [])
         respuesta_map = {
-            f"{r.get('id')} [{r.get('answerKey', 'N/A')}] - {r.get('texto', '')[:60]}": r
+            f"{r.get('id')} [{r.get('RespuestaKey', 'N/A')}] - {r.get('Texto', '')[:60]}": r
             for r in respuesta_options
         }
         selected_respuesta_label = st.selectbox(
@@ -707,10 +707,10 @@ with tab2:
             if selected_respuesta_label:
                 selected_respuesta = respuesta_map[selected_respuesta_label]
                 selected_respuesta_id = selected_respuesta.get("id", "")
-                default_respuesta_text = selected_respuesta.get("texto", "")
-                default_respuesta_answer_key = selected_respuesta.get("answerKey", "")
+                default_respuesta_text = selected_respuesta.get("Texto", "")
+                default_respuesta_answer_key = selected_respuesta.get("RespuestaKey", "")
 
-            st.info(f"AnswerKey actual: **{default_respuesta_answer_key or 'Sin key'}** (no se puede modificar)")
+            st.info(f"RespuestaKey actual: **{default_respuesta_answer_key or 'Sin key'}** (no se puede modificar)")
             edit_respuesta_texto = st.text_area("Nuevo texto respuesta", value=default_respuesta_text)
             edit_respuesta_submit = st.form_submit_button("Guardar cambios respuesta")
 
@@ -718,7 +718,7 @@ with tab2:
                 if not selected_respuesta_id:
                     st.warning("Primero lista y selecciona una respuesta")
                 else:
-                    payload = {"texto": edit_respuesta_texto}
+                    payload = {"Texto": edit_respuesta_texto}
                     response = api_request("PUT", f"/kb/respuestas/{selected_respuesta_id}", json=payload)
                     if response and response.status_code == 200:
                         result = response.json()
@@ -877,9 +877,9 @@ with tab2:
                     {
                         "id": p.get("id"),
                         "texto": p.get("texto"),
-                        "respuestaId": p.get("respuestaId"),
-                        "answerKey": answer_key_by_respuesta_id.get(p.get("respuestaId"), "N/A"),
-                        "activa": p.get("activa")
+                        "RespuestaId": p.get("respuestaId"),
+                        "RespuestaKey": answer_key_by_respuesta_id.get(p.get("respuestaId"), "N/A"),
+                        "Activa": p.get("activa")
                     }
                     for p in st.session_state.get("preguntas", [])
                 ],
@@ -1074,12 +1074,12 @@ with tab2:
             snapshot_version = st.text_input("Version", placeholder="v2.1.0")
             snapshot_set_active = st.checkbox("Activar luego de crear", value=True)
             snapshot_threshold = st.slider(
-                "Threshold",
+                "Umbral de confianza",
                 min_value=0.0,
                 max_value=1.0,
                 value=0.80,
                 step=0.01,
-                help="Threshold que se guardará de forma inmutable en la versión de snapshot"
+                help="Umbral de confianza que se guardará de forma inmutable en la versión de snapshot"
             )
             create_snapshot = st.form_submit_button("Crear snapshot")
 
@@ -1097,174 +1097,6 @@ with tab2:
                     st.json(response.json())
                 elif response:
                     render_error_response(response)
-
-    if False:
-        st.subheader("Preguntas sin responder")
-
-        if "pending_questions" not in st.session_state:
-            st.session_state.pending_questions = []
-        if "pending_resolution_message" not in st.session_state:
-            st.session_state.pending_resolution_message = None
-        if "pending_questions_auto_loaded" not in st.session_state:
-            st.session_state.pending_questions_auto_loaded = False
-
-        pending_resolution_message = st.session_state.get("pending_resolution_message")
-        if pending_resolution_message:
-            st.success(pending_resolution_message)
-            st.session_state.pending_resolution_message = None
-
-        # Auto-load pending questions on first entry
-        if not st.session_state.pending_questions_auto_loaded:
-            response = api_request("GET", "/kb/unanswered-questions/pending", params={"limit": 20})
-            if response and response.status_code == 200:
-                st.session_state.pending_questions = response.json()
-                st.session_state.pending_questions_auto_loaded = True
-            elif response:
-                render_error_response(response)
-
-        if st.button("Ver pendientes", key="btn_pending_questions"):
-            response = api_request("GET", "/kb/unanswered-questions/pending", params={"limit": 20})
-            if response and response.status_code == 200:
-                st.session_state.pending_questions = response.json()
-                st.success(f"{len(st.session_state.pending_questions)} pendientes")
-            elif response:
-                render_error_response(response)
-
-        if st.session_state.get("pending_questions", []):
-            for q in st.session_state.get("pending_questions", []):
-                question_text = q.get("question") or q.get("pregunta") or q.get("query") or "(sin texto)"
-                with st.expander(f"{q.get('id')} - {question_text[:90]}"):
-                    st.json(q)
-
-            pending_map = {
-                f"{q.get('id')} - {(q.get('question') or q.get('pregunta') or q.get('query') or '')[:80]}": q
-                for q in st.session_state.get("pending_questions", [])
-            }
-
-            selected_pending = st.selectbox(
-                "Seleccionar pendiente a resolver",
-                [""] + list(pending_map.keys()),
-                key="select_pending_question"
-            )
-
-            selected_pending_item = pending_map.get(selected_pending, {}) if selected_pending else {}
-            pending_generated_answer = first_present(
-                selected_pending_item,
-                "respuestaGenIA",
-                "respuesta_gen_ia",
-                "generatedAnswer",
-                default="",
-            ) or ""
-
-            # Estado fuera del form para controlar qué campos se muestran
-            pending_estado = st.selectbox("Estado", ["respondida", "cancelada"], key="pending_estado_select")
-
-            # Cargar catálogo de respuestas solo si se va a usar
-            pending_resolution_mode = st.session_state.get("pending_resolution_mode_radio", "Usar respuesta existente")
-            respuestas_catalog_pending = []
-            answer_options_pending = {}
-            if pending_estado == "respondida":
-                respuestas_catalog_pending = load_respuestas_catalog()
-                answer_options_pending = {
-                    f"{r.get('id')} [{r.get('answerKey') or 'Sin key'}] - {(r.get('texto') or '')[:60]}": r
-                    for r in respuestas_catalog_pending
-                    if r.get("id")
-                }
-                pending_resolution_mode = st.radio(
-                    "Resolución en KB",
-                    ["Usar respuesta existente", "Crear nueva respuesta"],
-                    horizontal=True,
-                    key="pending_resolution_mode_radio",
-                )
-
-            with st.form("form_resolve_pending"):
-                pending_usuario = st.text_input("Usuario", value="admin")
-
-                if pending_estado == "respondida":
-                    pending_question_text = st.text_area(
-                        "Texto de pregunta (opcional)",
-                        value=first_present(selected_pending_item, "queryProcesada", "queryOriginal", "query", "question", "pregunta", default="") or "",
-                        help="Si no se completa, se usa el texto original de la pregunta pendiente.",
-                    )
-
-                    selected_existing_answer_label = ""
-                    selected_existing_answer_id = ""
-                    new_pending_answer_text = ""
-                    new_pending_answer_key = ""
-
-                    if pending_resolution_mode == "Usar respuesta existente":
-                        selected_existing_answer_label = st.selectbox(
-                            "Respuesta existente",
-                            [""] + list(answer_options_pending.keys()),
-                        )
-                        selected_existing_answer_id = (answer_options_pending.get(selected_existing_answer_label) or {}).get("id", "")
-                    else:
-                        new_pending_answer_text = st.text_area(
-                            "Texto de nueva respuesta",
-                            value=pending_generated_answer,
-                            placeholder="Escribe la respuesta final para guardar en KB",
-                        )
-                        new_pending_answer_key = st.text_input(
-                            "ANSWER_KEY (opcional)",
-                            placeholder="EJ: SALDO_CONSULTA",
-                            help="Si lo dejas vacío, el backend lo genera automáticamente.",
-                        )
-                else:
-                    pending_question_text = ""
-                    selected_existing_answer_id = ""
-                    new_pending_answer_text = ""
-                    new_pending_answer_key = ""
-
-                pending_observaciones = st.text_area("Observaciones")
-                submit_pending = st.form_submit_button("Guardar resolucion")
-
-                if submit_pending:
-                    if not selected_pending:
-                        st.warning("Selecciona una pregunta pendiente")
-                    elif pending_estado == "cancelada" and not pending_observaciones.strip():
-                        st.warning("Completa las observaciones para cancelar")
-                    elif pending_estado == "respondida" and pending_resolution_mode == "Usar respuesta existente" and not selected_existing_answer_id:
-                        st.warning("Selecciona una respuesta existente")
-                    elif pending_estado == "respondida" and pending_resolution_mode == "Crear nueva respuesta" and not new_pending_answer_text.strip():
-                        st.warning("Completa el texto de la nueva respuesta")
-                    else:
-                        pending_id = pending_map[selected_pending].get("id")
-                        payload = {
-                            "estado": pending_estado,
-                            "usuario": pending_usuario,
-                            "preguntaTexto": (pending_question_text or "").strip() or None,
-                            "respuestaIdExistente": (
-                                selected_existing_answer_id
-                                if pending_estado == "respondida" and pending_resolution_mode == "Usar respuesta existente"
-                                else None
-                            ),
-                            "respuestaTextoNueva": (
-                                new_pending_answer_text.strip()
-                                if pending_estado == "respondida" and pending_resolution_mode == "Crear nueva respuesta"
-                                else None
-                            ),
-                            "respuestaAnswerKey": (
-                                new_pending_answer_key.strip()
-                                if pending_estado == "respondida" and pending_resolution_mode == "Crear nueva respuesta"
-                                else None
-                            ),
-                            "observaciones": pending_observaciones.strip() or None
-                        }
-                        response = api_request("PUT", f"/kb/unanswered-questions/{pending_id}/response", json=payload)
-                        if response and response.status_code == 200:
-                            resolved_payload = response.json() or {}
-                            st.session_state.pending_questions = [
-                                item
-                                for item in st.session_state.get("pending_questions", [])
-                                if item.get("id") != pending_id
-                            ]
-                            resolved_text = resolved_payload.get("message") or "Pendiente actualizado"
-                            st.session_state.pending_resolution_message = resolved_text
-                            st.session_state.pop("select_pending_question", None)
-                        elif response:
-                            render_error_response(response)
-        else:
-            st.info("No hay pendientes cargados. Usa 'Ver pendientes'.")
 
 with tab4:
     st.header("QA & Mejora Continua")
@@ -1302,7 +1134,7 @@ with tab4:
             d1, d2 = st.columns(2)
             with d1:
                 dup_threshold = st.slider(
-                    "Similarity Threshold",
+                    "Umbral de similitud",
                     min_value=0.0,
                     max_value=1.00,
                     value=0.95,
@@ -1420,7 +1252,7 @@ with tab4:
         with st.form("form_search_topn"):
             s1, s2, s3 = st.columns([3, 1, 1])
             with s1:
-                topn_query = st.text_input("Query", key="search_topn_query", placeholder="Como veo mi saldo?")
+                topn_query = st.text_input("Consulta", key="search_topn_query", placeholder="Como veo mi saldo?")
             with s2:
                 topn_value = st.number_input("Top N", min_value=1, max_value=20, value=5, step=1, key="search_topn_value")
             with s3:
@@ -1430,7 +1262,7 @@ with tab4:
 
         if run_topn:
             if not (topn_query or "").strip():
-                st.warning("Ingresá una query para ejecutar Search Top N")
+                st.warning("Ingresá una consulta para ejecutar Search Top N")
             else:
                 params = {
                     "query": topn_query.strip(),
@@ -1504,7 +1336,7 @@ with tab4:
         }
 
         with st.form("form_quality_evaluate"):
-            eval_query = st.text_input("Query")
+            eval_query = st.text_input("Consulta a evaluar", key="quality_eval_query", placeholder="¿Cómo veo mi saldo?")
             eval_answer_label = st.selectbox(
                 "Respuesta a evaluar",
                 [""] + list(quality_respuesta_map.keys()),
@@ -1603,9 +1435,9 @@ with tab4:
                     table_data.append({
                         "ID": test_id[:20] if len(test_id) > 20 else test_id,
                         "Categoría": category,
-                        "Query": query[:80] if len(query) > 80 else query,
-                        "Answer Key": expected_key,
-                        "Min Score": f"{min_score:.2f}",
+                        "Consulta": query[:80] if len(query) > 80 else query,
+                        "Clave de Respuesta": expected_key,
+                        "Confianza Mínima": f"{min_score:.2f}",
                         "Variaciones": len(variations),
                         "Descripción": test_desc[:50] if len(test_desc) > 50 else test_desc,
                     })
@@ -1775,9 +1607,9 @@ with tab3:
                 "below_threshold": "below_match",
             }
             label_map = {
-                "below_match": "below_threshold",
-                "match": "match",
-                "no_match": "no match",
+                "below_match": "Bajo umbral",
+                "match": "Coincidencia",
+                "no_match": "Sin coincidencia",
             }
 
             for key, val in (result_distribution or {}).items():
@@ -1795,6 +1627,13 @@ with tab3:
                     distribution_totals[normalized_key] += quantity
 
             total_distribution = sum(distribution_totals.values())
+
+            # Añadir porcentaje respecto al total para tooltip y resumen.
+            for row in distribution_rows:
+                pct_value = (row["Cantidad"] / total_distribution * 100) if total_distribution > 0 else 0.0
+                row["Porcentaje"] = pct_value
+                row["PorcentajeTexto"] = f"{pct_value:.2f}%"
+
             answered_match_pct = (
                 (distribution_totals["match"] / total_distribution) * 100
                 if total_distribution > 0
@@ -1856,20 +1695,20 @@ with tab3:
                                 "encoding": {
                                     "theta": {"field": "Cantidad", "type": "quantitative"},
                                     "color": {
-                                        "field": "ResultadoKey",
+                                        "field": "Resultado",
                                         "type": "nominal",
                                         "scale": {
-                                            "domain": ["below_match", "match", "no_match"],
+                                            "domain": ["Bajo umbral", "Coincidencia", "Sin coincidencia"],
                                             "range": ["#f59e0b", "#2563eb", "#dc2626"],
                                         },
                                         "legend": {
                                             "title": "Resultado",
-                                            "labelExpr": "datum.label === 'below_match' ? 'below_threshold' : datum.label",
                                         },
                                     },
                                     "tooltip": [
                                         {"field": "Resultado", "type": "nominal"},
                                         {"field": "Cantidad", "type": "quantitative"},
+                                        {"field": "PorcentajeTexto", "type": "nominal", "title": "% del total"},
                                     ],
                                 },
                             },
@@ -1881,9 +1720,9 @@ with tab3:
                     st.caption(
                         " | ".join(
                             [
-                                f"below_threshold: {int(distribution_totals['below_match'])}",
-                                f"match: {int(distribution_totals['match'])}",
-                                f"no_match: {int(distribution_totals['no_match'])}",
+                                f"Bajo umbral: {int(distribution_totals['below_match'])} ({(distribution_totals['below_match'] / total_distribution * 100) if total_distribution > 0 else 0:.2f}%)",
+                                f"Coincidencia: {int(distribution_totals['match'])} ({(distribution_totals['match'] / total_distribution * 100) if total_distribution > 0 else 0:.2f}%)",
+                                f"Sin coincidencia: {int(distribution_totals['no_match'])} ({(distribution_totals['no_match'] / total_distribution * 100) if total_distribution > 0 else 0:.2f}%)",
                             ]
                         )
                     )
@@ -1918,12 +1757,12 @@ with tab3:
                     st.dataframe(
                         [
                             {
-                                "timestamp": item.get("timestamp"),
-                                "query": item.get("originalQuery"),
-                                "resultado": item.get("resultado"),
-                                "cacheHit": item.get("cacheHit"),
-                                "score": item.get("score"),
-                                "latencyMs": item.get("totalLatencyMs")
+                                "Fecha": item.get("timestamp"),
+                                "Consulta": item.get("originalQuery"),
+                                "Resultado": item.get("resultado"),
+                                "Cache": item.get("cacheHit"),
+                                "Confianza": item.get("score"),
+                                "Latencia (ms)": item.get("totalLatencyMs")
                             }
                             for item in sorted(ops_recent, key=lambda x: x.get("timestamp", ""))
                         ],
@@ -2065,13 +1904,13 @@ with tab3:
                 with g1:
                     st.metric("Total", total_tests)
                 with g2:
-                    st.metric("Passed", passed)
+                    st.metric("Aprobadas", passed)
                 with g3:
-                    st.metric("Failed", failed)
+                    st.metric("Fallidas", failed)
                 with g4:
-                    st.metric("Pass Rate", f"{pass_rate * 100:.1f}%")
+                    st.metric("Tasa de Aprobación", f"{pass_rate * 100:.1f}%")
                 with g6:
-                    st.metric("Score Promedio", f"{to_float(gr.get('averageScore', 0)):.3f}")
+                    st.metric("Confianza Promedio", f"{to_float(gr.get('averageScore', 0)):.3f}")
                 with g7:
                     st.metric("Respuestas Inactivas", int(gr.get("inactiveAnswersReturned", 0) or 0))
 
@@ -2101,32 +1940,32 @@ with tab3:
                         unified_rows.append(
                             {
                                 "Categoría": cat,
-                                "Support": int(root_d.get("support", detail_d.get("totalTests", 0)) or 0),
-                                "Passed": int(detail_d.get("passed", 0) or 0),
-                                "Failed": int(detail_d.get("failed", 0) or 0),
-                                "Accuracy": to_float(root_d.get("accuracy", root_d.get("passRate", 0))),
-                                "Precision": to_float(root_d.get("precision", 0)),
-                                "Recall": to_float(root_d.get("recall", 0)),
-                                "Pass Rate (%)": to_float(detail_d.get("passRate", root_d.get("passRate", 0))) * 100,
-                                "Score Promedio": to_float(detail_d.get("averageScore", root_d.get("averageScore", 0))),
+                                "Soporte": int(root_d.get("support", detail_d.get("totalTests", 0)) or 0),
+                                "Aprobadas": int(detail_d.get("passed", 0) or 0),
+                                "Fallidas": int(detail_d.get("failed", 0) or 0),
+                                "Precisión": to_float(root_d.get("accuracy", root_d.get("passRate", 0))),
+                                "Exactitud": to_float(root_d.get("precision", 0)),
+                                "Recuperación": to_float(root_d.get("recall", 0)),
+                                "Tasa de Aprobación (%)": to_float(detail_d.get("passRate", root_d.get("passRate", 0))) * 100,
+                                "Confianza Promedio": to_float(detail_d.get("averageScore", root_d.get("averageScore", 0))),
                             }
                         )
                     st.markdown("---")
                     st.subheader("Por categoría")
                     st.dataframe(unified_rows, use_container_width=True)
-                    chart_data = [{"Categoría": r["Categoría"], "Passed": r["Passed"], "Failed": r["Failed"]} for r in unified_rows if r["Passed"] > 0 or r["Failed"] > 0]
+                    chart_data = [{"Categoría": r["Categoría"], "Aprobadas": r["Aprobadas"], "Fallidas": r["Fallidas"]} for r in unified_rows if r["Aprobadas"] > 0 or r["Fallidas"] > 0]
                     if chart_data:
                         st.bar_chart(
                             chart_data,
                             x="Categoría",
-                            y=["Passed", "Failed"],
+                            y=["Aprobadas", "Fallidas"],
                             use_container_width=True,
                         )
 
                 failures = gr.get("failures", []) or []
                 st.markdown("---")
                 if failures:
-                    st.subheader(f"Failures ({len(failures)})")
+                    st.subheader(f"Fallidas ({len(failures)})")
                     for failure in failures:
                         title = f"{failure.get('testId', 'N/A')} - {str(failure.get('query', ''))[:80]}"
                         with st.expander(title):
@@ -2134,12 +1973,12 @@ with tab3:
                             with f1:
                                 st.write("**Query:**", failure.get("query"))
                                 st.write("**Categoría:**", failure.get("category"))
-                                st.write("**Expected Key:**", failure.get("expectedAnswerKey"))
-                                st.write("**Actual Key:**", failure.get("actualAnswerKey") or "N/A")
-                                st.write("**Actual Answer ID:**", failure.get("actualAnswerId") or "N/A")
+                                st.write("**Clave Esperada:**", failure.get("expectedAnswerKey"))
+                                st.write("**Clave Actual:**", failure.get("actualAnswerKey") or "N/A")
+                                st.write("**ID de Respuesta Actual:**", failure.get("actualAnswerId") or "N/A")
                             with f2:
-                                st.write("**Expected Score:**", f">= {failure.get('expectedMinScore')}")
-                                st.write("**Actual Score:**", f"{to_float(failure.get('actualScore', 0)):.3f}")
+                                st.write("**Confianza Esperada:**", f">= {failure.get('expectedMinScore')}")
+                                st.write("**Confianza Actual:**", f"{to_float(failure.get('actualScore', 0)):.3f}")
                                 st.write("**Duración:**", f"{int(failure.get('durationMs', 0) or 0)} ms")
                                 st.write("**Activa:**", "Sí" if to_bool(failure.get("isActiveAnswer")) else "No")
                             st.error(failure.get("failureReason") or "Sin detalle")
@@ -2153,9 +1992,9 @@ with testing_tab1:
     # Tabla de segmentación
     st.markdown("**Segmentación de Riesgo**")
     segmentation_data = [
-        {"Segmento": "🔴 Alto", "Porcentaje": "60%", "Criterio": "Feedback negativo OR no_match OR score < 0.70"},
-        {"Segmento": "🟡 Medio", "Porcentaje": "30%", "Criterio": "below_threshold con score >= 0.70"},
-        {"Segmento": "🟢 Bajo", "Porcentaje": "10%", "Criterio": "match / score alto"},
+        {"Segmento": "🔴 Alto", "Porcentaje": "60%", "Criterio": "Feedback negativo, Sin respuesta o Confianza < 0.70"},
+        {"Segmento": "🟡 Medio", "Porcentaje": "30%", "Criterio": "Baja Confianza >= 0.70"},
+        {"Segmento": "🟢 Bajo", "Porcentaje": "10%", "Criterio": "Coincidencia / Confianza alta"},
     ]
     st.dataframe(segmentation_data, use_container_width=True, hide_index=True)
 
@@ -2226,6 +2065,8 @@ with testing_tab1:
             review_status = item.get("reviewStatus", "pendiente_revision")
             ai_draft_status = item.get("aiDraftStatus", "")
             ai_draft_answer = item.get("aiDraftAnswer", "")
+            ai_draft_source_file = item.get("aiDraftSourceFile", "")
+            ai_draft_source_page = item.get("aiDraftSourcePage", "")
             has_feedback = to_bool(item.get("hasUserFeedback", False))
             feedback_type = item.get("userFeedbackType", "")
             feedback_comment = item.get("feedbackComment", "")
@@ -2239,10 +2080,10 @@ with testing_tab1:
                 status_label = "Sin respuesta"
             elif resultado == "below_threshold":
                 status_badge = "🟡"
-                status_label = "Score bajo"
+                status_label = "Confianza baja"
             else:
                 status_badge = "🟢"
-                status_label = "Match"
+                status_label = "Coincidencia"
 
             title = f"{status_badge} {status_label} | {query[:80]}"
 
@@ -2250,8 +2091,8 @@ with testing_tab1:
                 col1, col2 = st.columns([2, 1])
                 
                 with col1:
-                    st.write(f"**Query:** {query}")
-                    st.write(f"**Score:** {score:.3f} | **Estado:** {review_status}")
+                    st.write(f"**Consulta:** {query}")
+                    st.write(f"**Confianza:** {score:.3f} | **Estado:** {review_status}")
                     st.write(f"**Resultado técnico:** {resultado}")
                     
                     # Mostrar respuesta proporcionada
@@ -2260,7 +2101,7 @@ with testing_tab1:
                     if answer_key or answer_text:
                         st.markdown("---")
                         if answer_key:
-                            st.write(f"**Answer Key:** {answer_key}")
+                            st.write(f"**Clave de Respuesta:** {answer_key}")
                         if answer_text:
                             st.write(f"**Respuesta proporcionada:** {answer_text}")
                     
@@ -2268,6 +2109,14 @@ with testing_tab1:
                         st.caption(f"💬 Comentario del usuario: {feedback_comment or '(sin comentario)'}")
                     if ai_draft_status == "generada" and ai_draft_answer:
                         st.info(f"💡 Borrador IA disponible: {ai_draft_answer[:200]}...")
+                        # Mostrar fuente del borrador IA si está disponible
+                        if ai_draft_source_file or ai_draft_source_page:
+                            fuente = f"**Fuente sugerencia IA:** "
+                            if ai_draft_source_file:
+                                fuente += f"Archivo: {ai_draft_source_file}"
+                            if ai_draft_source_page:
+                                fuente += f" | Página: {ai_draft_source_page}"
+                            st.caption(fuente)
 
                 with col2:
                     feedback_label = "Sin feedback" if not has_feedback else ("👍 Positivo" if feedback_type == "positive" else "👎 Negativo")
@@ -2320,7 +2169,7 @@ with testing_tab1:
                         placeholder="Escribir la nueva respuesta..."
                     )
                     nueva_respuesta_key = st.text_input(
-                        "ANSWER_KEY (opcional)",
+                        "CLAVE_DE_RESPUESTA (opcional)",
                         key=f"review_nueva_key_{idx}",
                         placeholder="EJ: SALDO_CONSULTA"
                     )
@@ -2418,9 +2267,9 @@ with testing_tab2:
         st.markdown("---")
         h1, h2, h3 = st.columns([4, 6, 2])
         with h1:
-            st.markdown("**queryText**")
+            st.markdown("**Texto**")
         with h2:
-            st.markdown("**expectedAnswerText**")
+            st.markdown("**Respuesta esperada**")
         with h3:
             st.markdown("**Acción**")
 
