@@ -609,7 +609,7 @@ def render_quality_summary_metrics(summary, previous_summary=None):
         summary["accuracy"],
         None if previous_summary is None else previous_summary.get("accuracy"),
         delta_scale=100,
-        delta_suffix=" pp",
+        delta_suffix=" ",
         help_text="De todas las predicciones que hice, ¿qué porcentaje fue correcto? = (TP + TN) / (TP + FP + FN + TN)",
     )
     render_quality_metric_card(
@@ -619,7 +619,7 @@ def render_quality_summary_metrics(summary, previous_summary=None):
         summary["precision"],
         None if previous_summary is None else previous_summary.get("precision"),
         delta_scale=100,
-        delta_suffix=" pp",
+        delta_suffix=" ",
         help_text="De las respuestas que el sistema retornó, ¿cuántas eran correctas? = TP / (TP + FP)",
     )
     render_quality_metric_card(
@@ -629,7 +629,7 @@ def render_quality_summary_metrics(summary, previous_summary=None):
         summary["recall"],
         None if previous_summary is None else previous_summary.get("recall"),
         delta_scale=100,
-        delta_suffix=" pp",
+        delta_suffix=" ",
         help_text="De las respuestas correctas que existían, ¿cuántas encontró el sistema? = TP / (TP + FN)",
     )
     render_quality_metric_card(
@@ -639,7 +639,7 @@ def render_quality_summary_metrics(summary, previous_summary=None):
         summary["f1"],
         None if previous_summary is None else previous_summary.get("f1"),
         delta_scale=100,
-        delta_suffix=" pp",
+        delta_suffix=" ",
         help_text="Media armónica entre precision y recall = 2 * (Precision * Recall) / (Precision + Recall)",
     )
     render_quality_metric_card(
@@ -685,7 +685,7 @@ def render_quality_summary_metrics(summary, previous_summary=None):
         summary["passRate"],
         None if previous_summary is None else previous_summary.get("passRate"),
         delta_scale=100,
-        delta_suffix=" pp",
+        delta_suffix=" ",
         delta_decimals=1,
     )
     render_quality_metric_card(
@@ -1042,7 +1042,7 @@ def build_quality_history_row(version, report=None, previous_summary=None, is_ac
                 summary["accuracy"],
                 None if previous_summary is None else previous_summary.get("accuracy"),
                 scale=100,
-                suffix=" pp",
+                suffix=" ",
             ),
         ),
         "Precision": format_quality_history_metric(
@@ -1051,7 +1051,7 @@ def build_quality_history_row(version, report=None, previous_summary=None, is_ac
                 summary["precision"],
                 None if previous_summary is None else previous_summary.get("precision"),
                 scale=100,
-                suffix=" pp",
+                suffix=" ",
             ),
         ),
         "Recall": format_quality_history_metric(
@@ -1060,7 +1060,7 @@ def build_quality_history_row(version, report=None, previous_summary=None, is_ac
                 summary["recall"],
                 None if previous_summary is None else previous_summary.get("recall"),
                 scale=100,
-                suffix=" pp",
+                suffix=" ",
             ),
         ),
         "F1": format_quality_history_metric(
@@ -1069,7 +1069,7 @@ def build_quality_history_row(version, report=None, previous_summary=None, is_ac
                 summary["f1"],
                 None if previous_summary is None else previous_summary.get("f1"),
                 scale=100,
-                suffix=" pp",
+                suffix=" ",
             ),
         ),
         "Total": format_quality_history_metric(
@@ -1104,7 +1104,7 @@ def build_quality_history_row(version, report=None, previous_summary=None, is_ac
                 summary["passRate"],
                 None if previous_summary is None else previous_summary.get("passRate"),
                 scale=100,
-                suffix=" pp",
+                suffix=" ",
             ),
         ),
         "Confianza": format_quality_history_metric(
