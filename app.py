@@ -1,6 +1,7 @@
 import streamlit as st
 import requests
 from datetime import datetime, time, timedelta
+from html import escape
 from urllib.parse import quote
 import os
 import pandas as pd
@@ -226,7 +227,9 @@ def build_requests_per_hour(recent_items):
         ts = parse_iso_datetime(item.get("timestamp"))
         if not ts:
             continue
-        hour_key = ts.replace(minute=0, second=0, microsecond=0).isoformat()
+        hour_key = ts.replace(minute=0, second=0, microsecond=0)
+        if hour_key.tzinfo is not None:
+            hour_key = hour_key.astimezone().replace(tzinfo=None)
         bucket[hour_key] = bucket.get(hour_key, 0) + 1
 
     return [
@@ -418,6 +421,701 @@ def normalize_recent_payload(payload):
         if normalized:
             normalized_items.append(normalized)
     return normalized_items
+
+
+def get_sorted_snapshot_versions():
+    snapshots = load_snapshots_list()
+
+    def snapshot_date(snapshot):
+        raw_date = (
+            snapshot.get("fechaCreacion")
+            or snapshot.get("createdAt")
+            or snapshot.get("fecha_creacion")
+            or ""
+        )
+        parsed_date = parse_iso_datetime(raw_date)
+        if not parsed_date:
+            return datetime.min
+        return parsed_date.replace(tzinfo=None)
+
+    ordered_snapshots = sorted(
+        [snapshot for snapshot in snapshots if snapshot.get("version")],
+        key=snapshot_date,
+        reverse=True,
+    )
+    return [snapshot.get("version") for snapshot in ordered_snapshots]
+
+
+def get_previous_snapshot_version(selected_version):
+    ordered_versions = get_sorted_snapshot_versions()
+    try:
+        current_index = ordered_versions.index(selected_version)
+    except ValueError:
+        return None
+
+    previous_index = current_index + 1
+    if previous_index < len(ordered_versions):
+        return ordered_versions[previous_index]
+    return None
+
+
+def build_quality_cache_key(dataset_label, version):
+    dataset_key = (dataset_label or "Golden").strip().lower()
+    version_key = (version or "__active__").strip() or "__active__"
+    return f"{dataset_key}::{version_key}"
+
+
+def extract_api_error_message(response):
+    if response is None:
+        return "No se pudo obtener respuesta de endpoints de ML metrics."
+
+    try:
+        payload = response.json()
+        if isinstance(payload, dict):
+            return payload.get("error") or payload.get("message") or json.dumps(payload)
+    except Exception:
+        pass
+
+    return (response.text or "").strip() or f"Error {response.status_code}"
+
+
+def fetch_quality_report(dataset_label, version=None, use_cache=True, show_errors=True):
+    cache = st.session_state.setdefault("quality_report_cache", {})
+    cache_key = build_quality_cache_key(dataset_label, version)
+
+    if use_cache and cache_key in cache:
+        return cache[cache_key], None
+
+    payload = {
+        "useGoldenDataset": dataset_label == "Golden",
+        "version": version,
+        "useFeedback": dataset_label != "Golden",
+    }
+
+    response, used_path = post_with_fallback(
+        ["/mlmetrics/calculate", "/mlmetrics/golden-dataset"],
+        json=payload,
+        params={"version": version} if version else None,
+    )
+
+    if response and response.status_code == 200:
+        run_payload = response.json() or {}
+        run_payload["_sourcePath"] = used_path
+        run_payload["_dataset"] = dataset_label
+        run_payload["_snapshot"] = version or run_payload.get("version")
+        run_payload["_executedAt"] = datetime.now().isoformat()
+        cache[cache_key] = run_payload
+        st.session_state.quality_report_cache = cache
+        return run_payload, None
+
+    error_message = extract_api_error_message(response)
+    if show_errors:
+        if response is not None:
+            render_error_response(response)
+        else:
+            st.error(error_message)
+
+    return None, error_message
+
+
+def get_quality_execution_report(run_payload):
+    if not isinstance(run_payload, dict):
+        return {}
+
+    detailed_report = run_payload.get("detailedReport") or {}
+    if isinstance(detailed_report, dict) and detailed_report:
+        return detailed_report
+
+    return run_payload
+
+
+def build_quality_summary(run_payload):
+    execution_report = get_quality_execution_report(run_payload)
+    total_tests = int(execution_report.get("totalTests", run_payload.get("totalSamples", 0)) or 0)
+    passed = int(execution_report.get("passed", run_payload.get("truePositives", 0)) or 0)
+    failed = execution_report.get("failed")
+    if failed is None:
+        failed = int(run_payload.get("falsePositives", 0) or 0) + int(run_payload.get("falseNegatives", 0) or 0)
+
+    pass_rate = to_float(execution_report.get("passRate"), default=None)
+    if pass_rate is None and total_tests > 0:
+        pass_rate = passed / total_tests
+
+    return {
+        "version": (
+            run_payload.get("_snapshot")
+            or run_payload.get("version")
+            or execution_report.get("snapshotVersion")
+            or "N/A"
+        ),
+        "evaluatedAt": (
+            run_payload.get("evaluatedAt")
+            or execution_report.get("executedAt")
+            or run_payload.get("_executedAt")
+        ),
+        "accuracy": to_float(run_payload.get("accuracy", run_payload.get("passRate", 0))),
+        "precision": to_float(run_payload.get("precision", 0)),
+        "recall": to_float(run_payload.get("recall", 0)),
+        "f1": to_float(run_payload.get("f1Score", 0)),
+        "total": total_tests,
+        "passed": passed,
+        "failed": int(failed or 0),
+        "passRate": to_float(pass_rate, default=0.0),
+        "averageScore": to_float(execution_report.get("averageScore", 0)),
+        "inactiveAnswersReturned": int(execution_report.get("inactiveAnswersReturned", 0) or 0),
+    }
+
+
+def format_quality_timestamp(raw_value):
+    parsed_value = parse_iso_datetime(raw_value)
+    if parsed_value:
+        return parsed_value.replace(tzinfo=None).strftime("%Y-%m-%d %H:%M")
+    return str(raw_value or "N/A")
+
+
+def render_quality_metric_card(
+    column,
+    label,
+    display_value,
+    current_value,
+    previous_value=None,
+    delta_scale=1.0,
+    delta_suffix="",
+    delta_decimals=2,
+    delta_color="normal",
+    help_text=None,
+):
+    delta_text = None
+    if previous_value is not None:
+        delta_amount = (current_value - previous_value) * delta_scale
+        delta_text = f"{delta_amount:+.{delta_decimals}f}{delta_suffix}"
+
+    with column:
+        st.metric(
+            label,
+            display_value,
+            delta=delta_text,
+            delta_color=delta_color,
+            help=help_text,
+        )
+
+
+def render_quality_summary_metrics(summary, previous_summary=None):
+    row1 = st.columns(5)
+    render_quality_metric_card(
+        row1[0],
+        "Accuracy",
+        f"{summary['accuracy'] * 100:.2f}%",
+        summary["accuracy"],
+        None if previous_summary is None else previous_summary.get("accuracy"),
+        delta_scale=100,
+        delta_suffix=" pp",
+        help_text="De todas las predicciones que hice, ¿qué porcentaje fue correcto? = (TP + TN) / (TP + FP + FN + TN)",
+    )
+    render_quality_metric_card(
+        row1[1],
+        "Precision",
+        f"{summary['precision'] * 100:.2f}%",
+        summary["precision"],
+        None if previous_summary is None else previous_summary.get("precision"),
+        delta_scale=100,
+        delta_suffix=" pp",
+        help_text="De las respuestas que el sistema retornó, ¿cuántas eran correctas? = TP / (TP + FP)",
+    )
+    render_quality_metric_card(
+        row1[2],
+        "Recall",
+        f"{summary['recall'] * 100:.2f}%",
+        summary["recall"],
+        None if previous_summary is None else previous_summary.get("recall"),
+        delta_scale=100,
+        delta_suffix=" pp",
+        help_text="De las respuestas correctas que existían, ¿cuántas encontró el sistema? = TP / (TP + FN)",
+    )
+    render_quality_metric_card(
+        row1[3],
+        "F1",
+        f"{summary['f1'] * 100:.2f}%",
+        summary["f1"],
+        None if previous_summary is None else previous_summary.get("f1"),
+        delta_scale=100,
+        delta_suffix=" pp",
+        help_text="Media armónica entre precision y recall = 2 * (Precision * Recall) / (Precision + Recall)",
+    )
+    render_quality_metric_card(
+        row1[4],
+        "Confianza Promedio",
+        f"{summary['averageScore']:.3f}",
+        summary["averageScore"],
+        None if previous_summary is None else previous_summary.get("averageScore"),
+        delta_decimals=3,
+    )
+
+    row2 = st.columns(5)
+    render_quality_metric_card(
+        row2[0],
+        "Total",
+        summary["total"],
+        summary["total"],
+        None if previous_summary is None else previous_summary.get("total"),
+        delta_decimals=0,
+        delta_color="off",
+    )
+    render_quality_metric_card(
+        row2[1],
+        "Aprobadas",
+        summary["passed"],
+        summary["passed"],
+        None if previous_summary is None else previous_summary.get("passed"),
+        delta_decimals=0,
+    )
+    render_quality_metric_card(
+        row2[2],
+        "Fallidas",
+        summary["failed"],
+        summary["failed"],
+        None if previous_summary is None else previous_summary.get("failed"),
+        delta_decimals=0,
+        delta_color="inverse",
+    )
+    render_quality_metric_card(
+        row2[3],
+        "Tasa de Aprobación",
+        f"{summary['passRate'] * 100:.1f}%",
+        summary["passRate"],
+        None if previous_summary is None else previous_summary.get("passRate"),
+        delta_scale=100,
+        delta_suffix=" pp",
+        delta_decimals=1,
+    )
+    render_quality_metric_card(
+        row2[4],
+        "Respuestas Inactivas",
+        summary["inactiveAnswersReturned"],
+        summary["inactiveAnswersReturned"],
+        None if previous_summary is None else previous_summary.get("inactiveAnswersReturned"),
+        delta_decimals=0,
+        delta_color="inverse",
+    )
+
+
+def render_quality_report_details(run_payload):
+    by_category = run_payload.get("byCategory", {}) or {}
+    execution_report = get_quality_execution_report(run_payload)
+
+    st.markdown("---")
+    st.markdown("**Matriz de confusión**")
+
+    confusion_matrix = run_payload.get("confusionMatrix", {}) or {}
+    tp = int(confusion_matrix.get("truePositives", run_payload.get("truePositives", 0)) or 0)
+    fp = int(confusion_matrix.get("falsePositives", run_payload.get("falsePositives", 0)) or 0)
+    fn = int(confusion_matrix.get("falseNegatives", run_payload.get("falseNegatives", 0)) or 0)
+    tn = int(confusion_matrix.get("trueNegatives", run_payload.get("trueNegatives", 0)) or 0)
+
+    confusion_df = pd.DataFrame(
+        [[tp, fn], [fp, tn]],
+        index=["Real Positivo", "Real Negativo"],
+        columns=["Pred Positivo", "Pred Negativo"],
+    )
+    st.dataframe(confusion_df, use_container_width=True)
+
+    detailed_by_category = execution_report.get("byCategory", {}) or {}
+    all_categories = sorted(set(list(by_category.keys()) + list(detailed_by_category.keys())))
+    if all_categories:
+        category_rows = []
+        for category in all_categories:
+            root_metrics = by_category.get(category, {})
+            detailed_metrics = detailed_by_category.get(category, {})
+            category_rows.append(
+                {
+                    "Categoría": category,
+                    "Soporte": int(root_metrics.get("support", detailed_metrics.get("totalTests", 0)) or 0),
+                    "Aprobadas": int(detailed_metrics.get("passed", 0) or 0),
+                    "Fallidas": int(detailed_metrics.get("failed", 0) or 0),
+                    "Precisión": to_float(root_metrics.get("accuracy", root_metrics.get("passRate", 0))),
+                    "Exactitud": to_float(root_metrics.get("precision", 0)),
+                    "Recuperación": to_float(root_metrics.get("recall", 0)),
+                    "Tasa de Aprobación (%)": to_float(
+                        detailed_metrics.get("passRate", root_metrics.get("passRate", 0))
+                    ) * 100,
+                    "Confianza Promedio": to_float(
+                        detailed_metrics.get("averageScore", root_metrics.get("averageScore", 0))
+                    ),
+                }
+            )
+
+        st.markdown("---")
+        st.markdown("**Por categoría**")
+        st.dataframe(category_rows, use_container_width=True)
+
+        category_chart_rows = [
+            {
+                "Categoría": row["Categoría"],
+                "Aprobadas": row["Aprobadas"],
+                "Fallidas": row["Fallidas"],
+            }
+            for row in category_rows
+            if row["Aprobadas"] > 0 or row["Fallidas"] > 0
+        ]
+        if category_chart_rows:
+            st.bar_chart(
+                category_chart_rows,
+                x="Categoría",
+                y=["Aprobadas", "Fallidas"],
+                use_container_width=True,
+            )
+
+    failures = execution_report.get("failures", []) or []
+    st.markdown("---")
+    if failures:
+        st.markdown(f"**Fallidas ({len(failures)})**")
+        for failure in failures:
+            title = f"{failure.get('testId', 'N/A')} - {str(failure.get('query', ''))[:80]}"
+            with st.expander(title):
+                f1, f2 = st.columns(2)
+                with f1:
+                    st.write("**Query:**", failure.get("query"))
+                    st.write("**Categoría:**", failure.get("category"))
+                    st.write("**Clave Esperada:**", failure.get("expectedAnswerKey"))
+                    st.write("**Clave Actual:**", failure.get("actualAnswerKey") or "N/A")
+                    st.write("**ID de Respuesta Actual:**", failure.get("actualAnswerId") or "N/A")
+                with f2:
+                    st.write("**Confianza Esperada:**", f">= {failure.get('expectedMinScore')}")
+                    st.write("**Confianza Actual:**", f"{to_float(failure.get('actualScore', 0)):.3f}")
+                    st.write("**Duración:**", f"{int(failure.get('durationMs', 0) or 0)} ms")
+                    st.write("**Activa:**", "Sí" if to_bool(failure.get("isActiveAnswer")) else "No")
+                st.error(failure.get("failureReason") or "Sin detalle")
+    else:
+        summary = build_quality_summary(run_payload)
+        if summary["total"] > 0:
+            st.success("Todos los tests pasaron")
+
+
+def format_quality_trend_text(
+    current_value,
+    previous_value=None,
+    *,
+    scale=1.0,
+    suffix="",
+    decimals=2,
+    inverse=False,
+    neutral=False,
+):
+    if previous_value is None:
+        return "→ Base"
+
+    delta_value = (current_value - previous_value) * scale
+    epsilon = 10 ** (-decimals) if decimals > 0 else 1e-9
+    if abs(delta_value) < epsilon:
+        return f"→ {0:.{decimals}f}{suffix}"
+
+    if neutral:
+        arrow = "↗" if delta_value > 0 else "↘"
+        return f"{arrow} {abs(delta_value):.{decimals}f}{suffix}"
+
+    improved = delta_value < 0 if inverse else delta_value > 0
+    arrow = "↑" if improved else "↓"
+    return f"{arrow} {abs(delta_value):.{decimals}f}{suffix}"
+
+
+def format_quality_history_metric(value_text, trend_text):
+    if value_text is None:
+        return "Sin métricas"
+    return f"{value_text} {trend_text}".strip()
+
+
+def get_quality_history_metric_columns():
+    return [
+        "Accuracy",
+        "Precision",
+        "Recall",
+        "F1",
+        "Total",
+        "Aprobadas",
+        "Fallidas",
+        "Tasa de Aprobación",
+        "Confianza",
+        "Respuestas Inactivas",
+    ]
+
+
+def split_quality_history_metric(cell_value):
+    if not isinstance(cell_value, str):
+        return str(cell_value or ""), ""
+
+    if cell_value == "Sin métricas":
+        return cell_value, ""
+
+    parts = cell_value.split(" ", 1)
+    if len(parts) == 1:
+        return parts[0], ""
+
+    return parts[0], parts[1]
+
+
+def get_quality_history_trend_style(trend_text):
+    if not trend_text:
+        return "color: #6b7280;"
+
+    if trend_text.startswith("↑"):
+        return "color: #15803d; font-weight: 600;"
+
+    if trend_text.startswith("↓"):
+        return "color: #b91c1c; font-weight: 600;"
+
+    if trend_text.startswith("↗") or trend_text.startswith("↘") or trend_text.startswith("→"):
+        return "color: #6b7280; font-weight: 500;"
+
+    return "color: #6b7280;"
+
+
+def build_quality_history_cell_html(cell_value, is_metric=False):
+    if cell_value is None:
+        return ""
+
+    if not is_metric:
+        return escape(str(cell_value))
+
+    value_text, trend_text = split_quality_history_metric(str(cell_value))
+    if value_text == "Sin métricas":
+        return '<span style="color: #9ca3af;">Sin métricas</span>'
+
+    if not trend_text:
+        return escape(value_text)
+
+    return (
+        f"{escape(value_text)} "
+        f"<span style=\"{get_quality_history_trend_style(trend_text)}\">{escape(trend_text)}</span>"
+    )
+
+
+def render_quality_history_table(history_rows):
+    if not history_rows:
+        return
+
+    columns = list(history_rows[0].keys())
+    metric_columns = set(get_quality_history_metric_columns())
+
+    header_html = "".join(f"<th>{escape(column)}</th>" for column in columns)
+    body_html = []
+    for row in history_rows:
+        cells_html = []
+        for column in columns:
+            cell_html = build_quality_history_cell_html(
+                row.get(column),
+                is_metric=column in metric_columns,
+            )
+            cells_html.append(f"<td>{cell_html}</td>")
+        body_html.append(f"<tr>{''.join(cells_html)}</tr>")
+
+    st.markdown(
+        f"""
+        <style>
+        .quality-history-table-wrapper {{
+            overflow-x: auto;
+            border: 1px solid #e5e7eb;
+            border-radius: 0.75rem;
+        }}
+        .quality-history-table {{
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.92rem;
+            background: white;
+        }}
+        .quality-history-table th,
+        .quality-history-table td {{
+            white-space: nowrap;
+            text-align: left;
+            padding: 0.6rem 0.75rem;
+            border-bottom: 1px solid #e5e7eb;
+            vertical-align: middle;
+        }}
+        .quality-history-table th {{
+            background: #f8fafc;
+            color: #111827;
+            font-weight: 600;
+        }}
+        .quality-history-table tbody tr:nth-child(even) {{
+            background: #fafafa;
+        }}
+        .quality-history-table tbody tr:hover {{
+            background: #f3f4f6;
+        }}
+        .quality-history-table tbody tr:last-child td {{
+            border-bottom: none;
+        }}
+        </style>
+        <div class="quality-history-table-wrapper">
+            <table class="quality-history-table">
+                <thead>
+                    <tr>{header_html}</tr>
+                </thead>
+                <tbody>
+                    {''.join(body_html)}
+                </tbody>
+            </table>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def get_quality_history_chart_definitions():
+    return [
+        {"field": "Accuracy (%)", "label": "Accuracy", "color": "#2563eb", "dash": [1, 0], "shape": "circle"},
+        {"field": "Precision (%)", "label": "Precision", "color": "#f97316", "dash": [6, 3], "shape": "square"},
+        {"field": "Recall (%)", "label": "Recall", "color": "#16a34a", "dash": [2, 2], "shape": "triangle-up"},
+        {"field": "F1 (%)", "label": "F1", "color": "#dc2626", "dash": [10, 4], "shape": "diamond"},
+        {"field": "Tasa de Aprobación (%)", "label": "Tasa de Aprobación", "color": "#7c3aed", "dash": [8, 3, 2, 3], "shape": "cross"},
+    ]
+
+
+def build_quality_history_chart_series(history_chart_rows, selected_metric_labels=None):
+    chart_defs = get_quality_history_chart_definitions()
+    selected_metric_labels = selected_metric_labels or [item["label"] for item in chart_defs]
+    selected_set = set(selected_metric_labels)
+
+    chart_series = []
+    for row in history_chart_rows:
+        for chart_def in chart_defs:
+            if chart_def["label"] not in selected_set:
+                continue
+
+            metric_value = row.get(chart_def["field"])
+            if metric_value is None:
+                continue
+
+            chart_series.append(
+                {
+                    "version": row.get("Versión"),
+                    "metric": chart_def["label"],
+                    "value": metric_value,
+                }
+            )
+
+    return chart_series
+
+
+def build_quality_history_chart_rows(history_items):
+    chart_rows = []
+    for item in reversed(history_items):
+        summary = item.get("summary")
+        if not summary:
+            continue
+
+        chart_rows.append(
+            {
+                "Versión": item.get("version"),
+                "Accuracy (%)": round(summary["accuracy"] * 100, 2),
+                "Precision (%)": round(summary["precision"] * 100, 2),
+                "Recall (%)": round(summary["recall"] * 100, 2),
+                "F1 (%)": round(summary["f1"] * 100, 2),
+                "Tasa de Aprobación (%)": round(summary["passRate"] * 100, 2),
+            }
+        )
+
+    return chart_rows
+
+
+def build_quality_history_row(version, report=None, previous_summary=None, is_active=False, error_message=None):
+    if not report:
+        return {
+            "Versión": version,
+            "Activa": "Sí" if is_active else "",
+            "Accuracy": "Sin métricas",
+            "Precision": "Sin métricas",
+            "Recall": "Sin métricas",
+            "F1": "Sin métricas",
+            "Total": "Sin métricas",
+            "Aprobadas": "Sin métricas",
+            "Fallidas": "Sin métricas",
+            "Tasa de Aprobación": "Sin métricas",
+            "Confianza": "Sin métricas",
+        }
+
+    summary = build_quality_summary(report)
+    return {
+        "Versión": version,
+        "Accuracy": format_quality_history_metric(
+            f"{summary['accuracy'] * 100:.2f}%",
+            format_quality_trend_text(
+                summary["accuracy"],
+                None if previous_summary is None else previous_summary.get("accuracy"),
+                scale=100,
+                suffix=" pp",
+            ),
+        ),
+        "Precision": format_quality_history_metric(
+            f"{summary['precision'] * 100:.2f}%",
+            format_quality_trend_text(
+                summary["precision"],
+                None if previous_summary is None else previous_summary.get("precision"),
+                scale=100,
+                suffix=" pp",
+            ),
+        ),
+        "Recall": format_quality_history_metric(
+            f"{summary['recall'] * 100:.2f}%",
+            format_quality_trend_text(
+                summary["recall"],
+                None if previous_summary is None else previous_summary.get("recall"),
+                scale=100,
+                suffix=" pp",
+            ),
+        ),
+        "F1": format_quality_history_metric(
+            f"{summary['f1'] * 100:.2f}%",
+            format_quality_trend_text(
+                summary["f1"],
+                None if previous_summary is None else previous_summary.get("f1"),
+                scale=100,
+                suffix=" pp",
+            ),
+        ),
+        "Total": format_quality_history_metric(
+            str(summary["total"]),
+            format_quality_trend_text(
+                summary["total"],
+                None if previous_summary is None else previous_summary.get("total"),
+                decimals=0,
+                neutral=True,
+            ),
+        ),
+        "Aprobadas": format_quality_history_metric(
+            str(summary["passed"]),
+            format_quality_trend_text(
+                summary["passed"],
+                None if previous_summary is None else previous_summary.get("passed"),
+                decimals=0,
+            ),
+        ),
+        "Fallidas": format_quality_history_metric(
+            str(summary["failed"]),
+            format_quality_trend_text(
+                summary["failed"],
+                None if previous_summary is None else previous_summary.get("failed"),
+                decimals=0,
+                inverse=True,
+            ),
+        ),
+        "Tasa de Aprobación": format_quality_history_metric(
+            f"{summary['passRate'] * 100:.2f}%",
+            format_quality_trend_text(
+                summary["passRate"],
+                None if previous_summary is None else previous_summary.get("passRate"),
+                scale=100,
+                suffix=" pp",
+            ),
+        ),
+        "Confianza": format_quality_history_metric(
+            f"{summary['averageScore']:.3f}",
+            format_quality_trend_text(
+                summary["averageScore"],
+                None if previous_summary is None else previous_summary.get("averageScore"),
+                decimals=3,
+            ),
+        ),
+    }
 
 
 def build_feedback_payload(
@@ -1678,7 +2376,61 @@ with tab3:
             with c1:
                 st.markdown("**Consultas por hora**")
                 if hourly_requests_series:
-                    st.line_chart(hourly_requests_series, x="hour", y="requests", use_container_width=True)
+                    hourly_requests_df = pd.DataFrame(hourly_requests_series)
+                    hourly_requests_df["hour"] = pd.to_datetime(hourly_requests_df["hour"])
+                    hourly_requests_df["hourLabel"] = hourly_requests_df["hour"].dt.strftime("%d/%m %Hh")
+                    hourly_requests_df["hourTooltip"] = hourly_requests_df["hour"].dt.strftime("%d/%m/%Y %H:%M")
+                    hourly_points = len(hourly_requests_df)
+                    if hourly_points <= 24:
+                        hourly_label_target = hourly_points
+                    elif hourly_points <= 96:
+                        hourly_label_target = 24
+                    else:
+                        hourly_label_target = 32
+                    hourly_axis_step = max(1, math.ceil(hourly_points / hourly_label_target))
+                    hourly_axis_values = hourly_requests_df["hourLabel"].iloc[::hourly_axis_step].tolist()
+                    last_hour_value = hourly_requests_df["hourLabel"].iloc[-1]
+                    if not hourly_axis_values or hourly_axis_values[-1] != last_hour_value:
+                        hourly_axis_values.append(last_hour_value)
+                    hourly_sort_values = hourly_requests_df["hourLabel"].tolist()
+
+                    st.vega_lite_chart(
+                        hourly_requests_df,
+                        {
+                            "mark": {"type": "line", "strokeWidth": 2.5},
+                            "encoding": {
+                                "x": {
+                                    "field": "hourLabel",
+                                    "type": "ordinal",
+                                    "sort": hourly_sort_values,
+                                    "title": "Hora",
+                                    "axis": {
+                                        "labelAngle": -35,
+                                        "labelOverlap": False,
+                                        "values": hourly_axis_values,
+                                    },
+                                },
+                                "y": {
+                                    "field": "requests",
+                                    "type": "quantitative",
+                                    "title": "Consultas",
+                                },
+                                "tooltip": [
+                                    {
+                                        "field": "hourTooltip",
+                                        "type": "nominal",
+                                        "title": "Hora",
+                                    },
+                                    {
+                                        "field": "requests",
+                                        "type": "quantitative",
+                                        "title": "Consultas",
+                                    },
+                                ],
+                            },
+                        },
+                        use_container_width=True,
+                    )
                 else:
                     st.info("Sin datos suficientes para consultas por hora.")
 
@@ -1774,216 +2526,394 @@ with tab3:
     with dash_tab2:
         st.subheader("Calidad del Modelo")
 
-        snapshots = load_snapshots_list()
-        snapshot_versions = [s.get("version") for s in snapshots if s.get("version")]
+        snapshot_versions = get_sorted_snapshot_versions()
         active_snapshot_version = get_active_snapshot_version()
 
-        q1, q2,  q4 = st.columns([2, 2, 1])
+        if "quality_report_cache" not in st.session_state:
+            st.session_state.quality_report_cache = {}
+        if "quality_current_view" not in st.session_state:
+            st.session_state.quality_current_view = {}
+        if "quality_history_view" not in st.session_state:
+            st.session_state.quality_history_view = {}
+        if "quality_compare_view" not in st.session_state:
+            st.session_state.quality_compare_view = {}
+
+        q1, q2 = st.columns([2, 4])
         with q1:
             quality_dataset = st.selectbox(
                 "Dataset",
                 ["Golden", "Regresion"],
                 key="quality_dataset_type",
             )
-        with q2:
-            if snapshot_versions:
-                quality_snapshot = st.selectbox(
-                    "Snapshot",
-                    snapshot_versions,
-                    index=snapshot_versions.index(active_snapshot_version) if active_snapshot_version in snapshot_versions else 0,
-                    format_func=lambda v: format_snapshot_option(v, active_snapshot_version),
-                    key="quality_snapshot",
-                )
-            else:
-                st.warning("No hay snapshots.")
-                quality_snapshot = None
-        with q4:
-            st.write("")
-            run_quality = st.button("Ejecutar corrida", type="primary", key="btn_run_quality_dashboard")
+        
 
-        if run_quality:
-            payload = {
-                "useGoldenDataset": quality_dataset == "Golden",
-                "version": quality_snapshot,
-                "useFeedback": quality_dataset != "Golden",           
-            }
+        quality_tab_actual, quality_tab_history, quality_tab_compare = st.tabs(
+            ["Actual", "Historico", "Comparar"]
+        )
 
-            with st.spinner("Ejecutando métricas de calidad..."):
-                ml_response, used_path = post_with_fallback([
-                    "/mlmetrics/calculate",
-                    "/mlmetrics/golden-dataset",
-                ], json=payload, params={"version": quality_snapshot} if quality_snapshot else None)
-
-            if ml_response and ml_response.status_code == 200:
-                run_payload = ml_response.json() or {}
-                run_payload["_sourcePath"] = used_path
-                run_payload["_dataset"] = quality_dataset
-                run_payload["_snapshot"] = quality_snapshot
-                run_payload["_executedAt"] = datetime.now().isoformat()
-
-                history = st.session_state.quality_runs
-                history.append(run_payload)
-                st.session_state.quality_runs = history[-25:]
-                st.success("Corrida de calidad completada")
-            elif ml_response:
-                render_error_response(ml_response)
-            else:
-                st.error("No se pudo obtener respuesta de endpoints de ML metrics.")
-
-        quality_runs = st.session_state.get("quality_runs", [])
-        latest_run = quality_runs[-1] if quality_runs else None
-        previous_run = quality_runs[-2] if len(quality_runs) > 1 else None
-
-        if not latest_run:
-            st.info("Ejecuta una corrida para ver métricas de calidad, deltas y matriz de confusión.")
+        if snapshot_versions:
+            default_current_version = (
+                active_snapshot_version if active_snapshot_version in snapshot_versions else snapshot_versions[0]
+            )
+            default_previous_version = get_previous_snapshot_version(default_current_version)
         else:
-            latest_accuracy = to_float(latest_run.get("accuracy", latest_run.get("passRate", 0)))
-            latest_precision = to_float(latest_run.get("precision", 0))
-            latest_recall = to_float(latest_run.get("recall", 0))
-            latest_topk = to_float(
-                latest_run.get("topKAccuracy", latest_run.get("topkAccuracy", latest_run.get("topK", 0)))
-            )
+            default_current_version = None
+            default_previous_version = None
 
-            if previous_run:
-                delta_accuracy = latest_accuracy - to_float(previous_run.get("accuracy", previous_run.get("passRate", 0)))
-                delta_precision = latest_precision - to_float(previous_run.get("precision", 0))
-                delta_recall = latest_recall - to_float(previous_run.get("recall", 0))
-                delta_topk = latest_topk - to_float(
-                    previous_run.get("topKAccuracy", previous_run.get("topkAccuracy", previous_run.get("topK", 0)))
-                )
+        with quality_tab_actual:
+            if not snapshot_versions:
+                st.warning("No hay snapshots disponibles.")
             else:
-                delta_accuracy = delta_precision = delta_recall = delta_topk = 0.0
-
-            st.caption(
-                f"Última corrida: {latest_run.get('_executedAt', 'N/A')} | Dataset: {latest_run.get('_dataset', 'N/A')} | Snapshot: {latest_run.get('_snapshot', 'N/A')}"
-            )
-
-            m1, m2, m3 = st.columns(3)
-            with m1:
-                st.metric(
-                    "Accuracy",
-                    f"{latest_accuracy * 100:.2f}%",
-                    help="De todas las predicciones que hice, ¿qué porcentaje fue correcto? = (TP + TN) / (TP + FP + FN + TN)",
-                )
-            with m2:
-                st.metric(
-                    "Precision",
-                    f"{latest_precision * 100:.2f}%",
-                    help="De las respuestas que el sistema retornó, ¿cuántas eran correctas? = TP / (TP + FP)",
-                )
-            with m3:
-                st.metric(
-                    "Recall",
-                    f"{latest_recall * 100:.2f}%",
-                    help="De las respuestas correctas que existían, ¿cuántas encontró el sistema? = TP / (TP + FN)",
+                actual_version = st.selectbox(
+                    "Snapshot actual",
+                    snapshot_versions,
+                    index=snapshot_versions.index(default_current_version) if default_current_version in snapshot_versions else 0,
+                    format_func=lambda v: format_snapshot_option(v, active_snapshot_version),
+                    key="quality_actual_snapshot",
                 )
 
-            by_category = latest_run.get("byCategory", {}) or {}
-
-            # Los datos de ejecución vienen dentro de detailedReport (MLMetrics/calculate)
-            # o directamente en la raíz (testing/run-golden-dataset legacy).
-            dr = latest_run.get("detailedReport") or {}
-            has_golden_results = bool(dr) or any(
-                key in latest_run
-                for key in ["totalTests", "passed", "failed", "totalDurationMs", "averageScore", "failures"]
-            )
-
-            if has_golden_results:
-                # Preferir detailedReport; caer a la raíz si no existe.
-                gr = dr if dr else latest_run
-
-                st.markdown("---")
-                st.markdown("**Resultados de ejecución**")
-
-                total_tests = int(gr.get("totalTests", 0) or 0)
-                passed     = int(gr.get("passed", 0) or 0)
-                failed     = int(gr.get("failed", 0) or 0)
-                pass_rate  = to_float(gr.get("passRate", 0))
-
-                g1, g2, g3, g4, g6, g7 = st.columns(6)
-                with g1:
-                    st.metric("Total", total_tests)
-                with g2:
-                    st.metric("Aprobadas", passed)
-                with g3:
-                    st.metric("Fallidas", failed)
-                with g4:
-                    st.metric("Tasa de Aprobación", f"{pass_rate * 100:.1f}%")
-                with g6:
-                    st.metric("Confianza Promedio", f"{to_float(gr.get('averageScore', 0)):.3f}")
-                with g7:
-                    st.metric("Respuestas Inactivas", int(gr.get("inactiveAnswersReturned", 0) or 0))
-
-                st.markdown("---")
-                st.markdown("**Matriz de confusión**")
-
-                cm = latest_run.get("confusionMatrix", {}) or {}
-                tp = int(cm.get("truePositives", latest_run.get("truePositives", 0)) or 0)
-                fp = int(cm.get("falsePositives", latest_run.get("falsePositives", 0)) or 0)
-                fn = int(cm.get("falseNegatives", latest_run.get("falseNegatives", 0)) or 0)
-                tn = int(cm.get("trueNegatives", latest_run.get("trueNegatives", 0)) or 0)
-
-                cm_df = pd.DataFrame(
-                    [[tp, fn], [fp, tn]],
-                    index=["Real Positivo", "Real Negativo"],
-                    columns=["Pred Positivo", "Pred Negativo"],
-                )
-                st.dataframe(cm_df, use_container_width=True)
-
-                golden_by_cat = gr.get("byCategory", {}) or {}
-                all_cats = sorted(set(list(by_category.keys()) + list(golden_by_cat.keys())))
-                if all_cats:
-                    unified_rows = []
-                    for cat in all_cats:
-                        root_d  = by_category.get(cat, {})
-                        detail_d = golden_by_cat.get(cat, {})
-                        unified_rows.append(
-                            {
-                                "Categoría": cat,
-                                "Soporte": int(root_d.get("support", detail_d.get("totalTests", 0)) or 0),
-                                "Aprobadas": int(detail_d.get("passed", 0) or 0),
-                                "Fallidas": int(detail_d.get("failed", 0) or 0),
-                                "Precisión": to_float(root_d.get("accuracy", root_d.get("passRate", 0))),
-                                "Exactitud": to_float(root_d.get("precision", 0)),
-                                "Recuperación": to_float(root_d.get("recall", 0)),
-                                "Tasa de Aprobación (%)": to_float(detail_d.get("passRate", root_d.get("passRate", 0))) * 100,
-                                "Confianza Promedio": to_float(detail_d.get("averageScore", root_d.get("averageScore", 0))),
-                            }
+                if st.button("Consultar métricas", type="primary", key="btn_quality_actual"):
+                    previous_version = get_previous_snapshot_version(actual_version)
+                    with st.spinner("Consultando métricas actuales..."):
+                        current_report, current_error = fetch_quality_report(
+                            quality_dataset,
+                            actual_version,
+                            use_cache=False,
                         )
-                    st.markdown("---")
-                    st.subheader("Por categoría")
-                    st.dataframe(unified_rows, use_container_width=True)
-                    chart_data = [{"Categoría": r["Categoría"], "Aprobadas": r["Aprobadas"], "Fallidas": r["Fallidas"]} for r in unified_rows if r["Aprobadas"] > 0 or r["Fallidas"] > 0]
-                    if chart_data:
-                        st.bar_chart(
-                            chart_data,
-                            x="Categoría",
-                            y=["Aprobadas", "Fallidas"],
-                            use_container_width=True,
+                        previous_report = None
+                        previous_error = None
+                        if current_report and previous_version:
+                            previous_report, previous_error = fetch_quality_report(
+                                quality_dataset,
+                                previous_version,
+                                use_cache=False,
+                                show_errors=False,
+                            )
+
+                    if current_report:
+                        st.session_state.quality_current_view = {
+                            "dataset": quality_dataset,
+                            "currentVersion": actual_version,
+                            "previousVersion": previous_version,
+                            "current": current_report,
+                            "previous": previous_report,
+                            "previousError": previous_error,
+                        }
+                        st.success("Métricas cargadas")
+                    elif current_error:
+                        st.session_state.quality_current_view = {}
+
+                current_view = st.session_state.get("quality_current_view", {}) or {}
+                if current_view.get("dataset") != quality_dataset or not current_view.get("current"):
+                    st.info("Consultá una versión para ver métricas actuales y su comparación contra la anterior.")
+                else:
+                    current_summary = build_quality_summary(current_view["current"])
+                    previous_summary = (
+                        build_quality_summary(current_view["previous"])
+                        if current_view.get("previous")
+                        else None
+                    )
+
+                    if previous_summary:
+                        st.caption(
+                            f"Versión actual: {current_summary['version']} | Versión anterior: {previous_summary['version']} "
+                        )
+                    else:
+                        st.caption(
+                            f"Versión actual: {current_summary['version']} | Evaluado: {format_quality_timestamp(current_summary['evaluatedAt'])}"
+                        )
+                        if current_view.get("previousVersion") and current_view.get("previousError"):
+                            st.info(
+                                f"No se pudieron cargar métricas para la versión anterior {current_view.get('previousVersion')}: {current_view.get('previousError')}"
+                            )
+                        elif not current_view.get("previousVersion"):
+                            st.info("La versión seleccionada no tiene una versión anterior para comparar.")
+
+                    render_quality_summary_metrics(current_summary, previous_summary)
+                    render_quality_report_details(current_view["current"])
+
+        with quality_tab_history:
+            if not snapshot_versions:
+                st.warning("No hay snapshots disponibles.")
+            else:
+                if st.button("Cargar histórico", type="primary", key="btn_quality_history"):
+                    history_items = []
+                    with st.spinner("Cargando histórico de métricas..."):
+                        for version in snapshot_versions:
+                            report, error_message = fetch_quality_report(
+                                quality_dataset,
+                                version,
+                                use_cache=True,
+                                show_errors=False,
+                            )
+
+                            history_items.append(
+                                {
+                                    "version": version,
+                                    "report": report,
+                                    "summary": build_quality_summary(report) if report else None,
+                                    "isActive": version == active_snapshot_version,
+                                    "error": error_message,
+                                }
+                            )
+
+                    history_rows = []
+                    for index, item in enumerate(history_items):
+                        previous_summary = None
+                        if index + 1 < len(history_items):
+                            previous_summary = history_items[index + 1].get("summary")
+
+                        history_rows.append(
+                            build_quality_history_row(
+                                item.get("version"),
+                                report=item.get("report"),
+                                previous_summary=previous_summary,
+                                is_active=item.get("isActive", False),
+                                error_message=item.get("error"),
+                            )
                         )
 
-                failures = gr.get("failures", []) or []
-                st.markdown("---")
-                if failures:
-                    st.subheader(f"Fallidas ({len(failures)})")
-                    for failure in failures:
-                        title = f"{failure.get('testId', 'N/A')} - {str(failure.get('query', ''))[:80]}"
-                        with st.expander(title):
-                            f1, f2 = st.columns(2)
-                            with f1:
-                                st.write("**Query:**", failure.get("query"))
-                                st.write("**Categoría:**", failure.get("category"))
-                                st.write("**Clave Esperada:**", failure.get("expectedAnswerKey"))
-                                st.write("**Clave Actual:**", failure.get("actualAnswerKey") or "N/A")
-                                st.write("**ID de Respuesta Actual:**", failure.get("actualAnswerId") or "N/A")
-                            with f2:
-                                st.write("**Confianza Esperada:**", f">= {failure.get('expectedMinScore')}")
-                                st.write("**Confianza Actual:**", f"{to_float(failure.get('actualScore', 0)):.3f}")
-                                st.write("**Duración:**", f"{int(failure.get('durationMs', 0) or 0)} ms")
-                                st.write("**Activa:**", "Sí" if to_bool(failure.get("isActiveAnswer")) else "No")
-                            st.error(failure.get("failureReason") or "Sin detalle")
-                elif total_tests > 0:
-                    st.success("Todos los tests pasaron")
+                    history_chart_rows = build_quality_history_chart_rows(history_items)
+
+                    st.session_state.quality_history_view = {
+                        "dataset": quality_dataset,
+                        "rows": history_rows,
+                        "chartRows": history_chart_rows,
+                    }
+                    st.success(f"Histórico cargado: {len(history_rows)} versiones")
+
+                history_view = st.session_state.get("quality_history_view", {}) or {}
+                history_rows = history_view.get("rows", []) if history_view.get("dataset") == quality_dataset else []
+                history_chart_rows = history_view.get("chartRows", []) if history_view.get("dataset") == quality_dataset else []
+                if history_rows:
+                    if history_chart_rows:
+                        st.markdown("**Evolución de métricas**")
+                        chart_definitions = get_quality_history_chart_definitions()
+                        chart_metric_labels = [item["label"] for item in chart_definitions]
+                        selected_chart_metrics = st.multiselect(
+                            "Métricas visibles",
+                            chart_metric_labels,
+                            default=chart_metric_labels,
+                            key=f"quality_history_chart_metrics_{quality_dataset}",
+                        )
+
+                        if selected_chart_metrics:
+                            version_order = [row.get("Versión") for row in history_chart_rows]
+                            chart_series = build_quality_history_chart_series(
+                                history_chart_rows,
+                                selected_chart_metrics,
+                            )
+                            selected_defs = [item for item in chart_definitions if item["label"] in selected_chart_metrics]
+                            chart_df = pd.DataFrame(chart_series)
+
+                            if not chart_df.empty:
+                                st.vega_lite_chart(
+                                    chart_df,
+                                    {
+                                        "height": 360,
+                                        "layer": [
+                                            {
+                                                "mark": {"type": "line", "strokeWidth": 3},
+                                                "encoding": {
+                                                    "x": {
+                                                        "field": "version",
+                                                        "type": "ordinal",
+                                                        "sort": version_order,
+                                                        "axis": {"labelAngle": -20},
+                                                    },
+                                                    "y": {
+                                                        "field": "value",
+                                                        "type": "quantitative",
+                                                        "title": "%",
+                                                    },
+                                                    "color": {
+                                                        "field": "metric",
+                                                        "type": "nominal",
+                                                        "scale": {
+                                                            "domain": [item["label"] for item in selected_defs],
+                                                            "range": [item["color"] for item in selected_defs],
+                                                        },
+                                                        "legend": {"title": "Métrica"},
+                                                    },
+                                                    "strokeDash": {
+                                                        "field": "metric",
+                                                        "type": "nominal",
+                                                        "scale": {
+                                                            "domain": [item["label"] for item in selected_defs],
+                                                            "range": [item["dash"] for item in selected_defs],
+                                                        },
+                                                        "legend": None,
+                                                    },
+                                                    "tooltip": [
+                                                        {"field": "version", "type": "nominal", "title": "Versión"},
+                                                        {"field": "metric", "type": "nominal", "title": "Métrica"},
+                                                        {"field": "value", "type": "quantitative", "title": "Valor", "format": ".2f"},
+                                                    ],
+                                                },
+                                            },
+                                            {
+                                                "mark": {
+                                                    "type": "point",
+                                                    "filled": True,
+                                                    "size": 110,
+                                                    "stroke": "white",
+                                                    "strokeWidth": 1.5,
+                                                },
+                                                "encoding": {
+                                                    "x": {
+                                                        "field": "version",
+                                                        "type": "ordinal",
+                                                        "sort": version_order,
+                                                    },
+                                                    "y": {
+                                                        "field": "value",
+                                                        "type": "quantitative",
+                                                    },
+                                                    "color": {
+                                                        "field": "metric",
+                                                        "type": "nominal",
+                                                        "scale": {
+                                                            "domain": [item["label"] for item in selected_defs],
+                                                            "range": [item["color"] for item in selected_defs],
+                                                        },
+                                                        "legend": None,
+                                                    },
+                                                    "shape": {
+                                                        "field": "metric",
+                                                        "type": "nominal",
+                                                        "scale": {
+                                                            "domain": [item["label"] for item in selected_defs],
+                                                            "range": [item["shape"] for item in selected_defs],
+                                                        },
+                                                        "legend": None,
+                                                    },
+                                                    "tooltip": [
+                                                        {"field": "version", "type": "nominal", "title": "Versión"},
+                                                        {"field": "metric", "type": "nominal", "title": "Métrica"},
+                                                        {"field": "value", "type": "quantitative", "title": "Valor", "format": ".2f"},
+                                                    ],
+                                                },
+                                            },
+                                        ],
+                                    },
+                                    use_container_width=True,
+                                )
+                            else:
+                                st.info("No hay datos suficientes para graficar las métricas seleccionadas.")
+                        else:
+                            st.info("Seleccioná al menos una métrica para mostrar en el gráfico.")
+
+                        st.caption(
+                            "El gráfico muestra la evolución desde la versión más antigua hasta la más reciente. Si dos series coinciden exactamente, podés ocultar una desde 'Métricas visibles' para inspeccionarlas por separado."
+                        )
+                        st.markdown("---")
+
+                    render_quality_history_table(history_rows)
+                else:
+                    st.info("Cargá el histórico para ver la tabla de todas las versiones.")
+
+        with quality_tab_compare:
+            if len(snapshot_versions) < 2:
+                st.warning("Se necesitan al menos dos snapshots para comparar.")
+            else:
+                compare_default_left = default_current_version or snapshot_versions[0]
+                compare_default_right = default_previous_version or snapshot_versions[1]
+
+                c1, c2, c3 = st.columns([2, 2, 1])
+                with c1:
+                    compare_version_left = st.selectbox(
+                        "Versión A",
+                        snapshot_versions,
+                        index=snapshot_versions.index(compare_default_left) if compare_default_left in snapshot_versions else 0,
+                        format_func=lambda v: format_snapshot_option(v, active_snapshot_version),
+                        key="quality_compare_left_version",
+                    )
+                with c2:
+                    compare_version_right = st.selectbox(
+                        "Versión B",
+                        snapshot_versions,
+                        index=snapshot_versions.index(compare_default_right) if compare_default_right in snapshot_versions else 1,
+                        format_func=lambda v: format_snapshot_option(v, active_snapshot_version),
+                        key="quality_compare_right_version",
+                    )
+                with c3:
+                    st.write("")
+                    run_compare = st.button("Comparar", type="primary", key="btn_quality_compare")
+
+                if run_compare:
+                    if compare_version_left == compare_version_right:
+                        st.warning("Seleccioná dos versiones distintas para comparar.")
+                    else:
+                        with st.spinner("Consultando versiones para comparar..."):
+                            left_report, left_error = fetch_quality_report(
+                                quality_dataset,
+                                compare_version_left,
+                                use_cache=False,
+                                show_errors=False,
+                            )
+                            right_report, right_error = fetch_quality_report(
+                                quality_dataset,
+                                compare_version_right,
+                                use_cache=False,
+                                show_errors=False,
+                            )
+
+                        st.session_state.quality_compare_view = {
+                            "dataset": quality_dataset,
+                            "leftVersion": compare_version_left,
+                            "rightVersion": compare_version_right,
+                            "left": left_report,
+                            "right": right_report,
+                            "leftError": left_error,
+                            "rightError": right_error,
+                        }
+                        if left_report or right_report:
+                            st.success("Comparación cargada")
+
+                compare_view = st.session_state.get("quality_compare_view", {}) or {}
+                if compare_view.get("dataset") != quality_dataset or not (
+                    compare_view.get("leftVersion") or compare_view.get("rightVersion")
+                ):
+                    st.info("Elegí dos versiones y presioná 'Comparar' para ver ambas métricas lado a lado.")
+                else:
+                    left_summary = (
+                        build_quality_summary(compare_view["left"])
+                        if compare_view.get("left")
+                        else None
+                    )
+                    right_summary = (
+                        build_quality_summary(compare_view["right"])
+                        if compare_view.get("right")
+                        else None
+                    )
+
+                    left_column, right_column = st.columns([1, 1], gap="small")
+
+                    with left_column:
+                        st.markdown(f"**Versión A: {compare_view.get('leftVersion')}**")
+                        if left_summary:
+                            st.caption(
+                                f"Comparada contra {compare_view.get('rightVersion')} | Evaluado: {format_quality_timestamp(left_summary.get('evaluatedAt'))}"
+                            )
+                            render_quality_summary_metrics(left_summary, right_summary)
+                            render_quality_report_details(compare_view["left"])
+                        else:
+                            st.warning(
+                                f"No se pudieron cargar métricas para {compare_view.get('leftVersion')}: {compare_view.get('leftError')}"
+                            )
+
+                    with right_column:
+                        st.markdown(f"**Versión B: {compare_view.get('rightVersion')}**")
+                        if right_summary:
+                            st.caption(
+                                f"Comparada contra {compare_view.get('leftVersion')} | Evaluado: {format_quality_timestamp(right_summary.get('evaluatedAt'))}"
+                            )
+                            render_quality_summary_metrics(right_summary, left_summary)
+                            render_quality_report_details(compare_view["right"])
+                        else:
+                            st.warning(
+                                f"No se pudieron cargar métricas para {compare_view.get('rightVersion')}: {compare_view.get('rightError')}"
+                            )
 
 with testing_tab1:
     st.subheader("Cola de revisión")
