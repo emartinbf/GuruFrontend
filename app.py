@@ -1017,6 +1017,110 @@ def build_quality_history_chart_rows(history_items):
     return chart_rows
 
 
+def render_quality_history_mini_charts(history_chart_rows):
+    if not history_chart_rows:
+        return
+
+    chart_definitions = [
+        item for item in get_quality_history_chart_definitions() if item["label"] != "Tasa de Aprobación"
+    ]
+    version_order = [row.get("Versión") for row in history_chart_rows]
+    chart_columns = st.columns(len(chart_definitions))
+
+    for column, chart_def in zip(chart_columns, chart_definitions):
+        metric_rows = [
+            {
+                "version": row.get("Versión"),
+                "value": row.get(chart_def["field"]),
+            }
+            for row in history_chart_rows
+            if row.get(chart_def["field"]) is not None
+        ]
+        metric_df = pd.DataFrame(metric_rows)
+
+        with column:
+            st.markdown(f"**{chart_def['label']}**")
+            if metric_df.empty:
+                st.info("Sin datos")
+            else:
+                st.vega_lite_chart(
+                    metric_df,
+                    {
+                        "height": 220,
+                        "layer": [
+                            {
+                                "mark": {
+                                    "type": "line",
+                                    "strokeWidth": 2.5,
+                                    "color": chart_def["color"],
+                                },
+                                "encoding": {
+                                    "x": {
+                                        "field": "version",
+                                        "type": "ordinal",
+                                        "sort": version_order,
+                                        "axis": {
+                                            "title": None,
+                                            "labelAngle": -45,
+                                            "labelFontSize": 10,
+                                            "labelLimit": 70,
+                                        },
+                                    },
+                                    "y": {
+                                        "field": "value",
+                                        "type": "quantitative",
+                                        "title": None,
+                                        "scale": {"domain": [0, 100]},
+                                        "axis": {
+                                            "labelFontSize": 10,
+                                            "tickCount": 4,
+                                        },
+                                    },
+                                    "tooltip": [
+                                        {"field": "version", "type": "nominal", "title": "Versión"},
+                                        {
+                                            "field": "value",
+                                            "type": "quantitative",
+                                            "title": chart_def["label"],
+                                            "format": ".2f",
+                                        },
+                                    ],
+                                },
+                            },
+                            {
+                                "mark": {
+                                    "type": "point",
+                                    "filled": True,
+                                    "size": 55,
+                                    "color": chart_def["color"],
+                                },
+                                "encoding": {
+                                    "x": {
+                                        "field": "version",
+                                        "type": "ordinal",
+                                        "sort": version_order,
+                                    },
+                                    "y": {
+                                        "field": "value",
+                                        "type": "quantitative",
+                                    },
+                                    "tooltip": [
+                                        {"field": "version", "type": "nominal", "title": "Versión"},
+                                        {
+                                            "field": "value",
+                                            "type": "quantitative",
+                                            "title": chart_def["label"],
+                                            "format": ".2f",
+                                        },
+                                    ],
+                                },
+                            },
+                        ],
+                    },
+                    use_container_width=True,
+                )
+
+
 def build_quality_history_row(version, report=None, previous_summary=None, is_active=False, error_message=None):
     if not report:
         return {
@@ -2687,124 +2791,11 @@ with tab3:
                 history_chart_rows = history_view.get("chartRows", []) if history_view.get("dataset") == quality_dataset else []
                 if history_rows:
                     if history_chart_rows:
-                        st.markdown("**Evolución de métricas**")
-                        chart_definitions = get_quality_history_chart_definitions()
-                        chart_metric_labels = [item["label"] for item in chart_definitions]
-                        selected_chart_metrics = st.multiselect(
-                            "Métricas visibles",
-                            chart_metric_labels,
-                            default=chart_metric_labels,
-                            key=f"quality_history_chart_metrics_{quality_dataset}",
-                        )
-
-                        if selected_chart_metrics:
-                            version_order = [row.get("Versión") for row in history_chart_rows]
-                            chart_series = build_quality_history_chart_series(
-                                history_chart_rows,
-                                selected_chart_metrics,
-                            )
-                            selected_defs = [item for item in chart_definitions if item["label"] in selected_chart_metrics]
-                            chart_df = pd.DataFrame(chart_series)
-
-                            if not chart_df.empty:
-                                st.vega_lite_chart(
-                                    chart_df,
-                                    {
-                                        "height": 360,
-                                        "layer": [
-                                            {
-                                                "mark": {"type": "line", "strokeWidth": 3},
-                                                "encoding": {
-                                                    "x": {
-                                                        "field": "version",
-                                                        "type": "ordinal",
-                                                        "sort": version_order,
-                                                        "axis": {"labelAngle": -20},
-                                                    },
-                                                    "y": {
-                                                        "field": "value",
-                                                        "type": "quantitative",
-                                                        "title": "%",
-                                                    },
-                                                    "color": {
-                                                        "field": "metric",
-                                                        "type": "nominal",
-                                                        "scale": {
-                                                            "domain": [item["label"] for item in selected_defs],
-                                                            "range": [item["color"] for item in selected_defs],
-                                                        },
-                                                        "legend": {"title": "Métrica"},
-                                                    },
-                                                    "strokeDash": {
-                                                        "field": "metric",
-                                                        "type": "nominal",
-                                                        "scale": {
-                                                            "domain": [item["label"] for item in selected_defs],
-                                                            "range": [item["dash"] for item in selected_defs],
-                                                        },
-                                                        "legend": None,
-                                                    },
-                                                    "tooltip": [
-                                                        {"field": "version", "type": "nominal", "title": "Versión"},
-                                                        {"field": "metric", "type": "nominal", "title": "Métrica"},
-                                                        {"field": "value", "type": "quantitative", "title": "Valor", "format": ".2f"},
-                                                    ],
-                                                },
-                                            },
-                                            {
-                                                "mark": {
-                                                    "type": "point",
-                                                    "filled": True,
-                                                    "size": 110,
-                                                    "stroke": "white",
-                                                    "strokeWidth": 1.5,
-                                                },
-                                                "encoding": {
-                                                    "x": {
-                                                        "field": "version",
-                                                        "type": "ordinal",
-                                                        "sort": version_order,
-                                                    },
-                                                    "y": {
-                                                        "field": "value",
-                                                        "type": "quantitative",
-                                                    },
-                                                    "color": {
-                                                        "field": "metric",
-                                                        "type": "nominal",
-                                                        "scale": {
-                                                            "domain": [item["label"] for item in selected_defs],
-                                                            "range": [item["color"] for item in selected_defs],
-                                                        },
-                                                        "legend": None,
-                                                    },
-                                                    "shape": {
-                                                        "field": "metric",
-                                                        "type": "nominal",
-                                                        "scale": {
-                                                            "domain": [item["label"] for item in selected_defs],
-                                                            "range": [item["shape"] for item in selected_defs],
-                                                        },
-                                                        "legend": None,
-                                                    },
-                                                    "tooltip": [
-                                                        {"field": "version", "type": "nominal", "title": "Versión"},
-                                                        {"field": "metric", "type": "nominal", "title": "Métrica"},
-                                                        {"field": "value", "type": "quantitative", "title": "Valor", "format": ".2f"},
-                                                    ],
-                                                },
-                                            },
-                                        ],
-                                    },
-                                    use_container_width=True,
-                                )
-                            else:
-                                st.info("No hay datos suficientes para graficar las métricas seleccionadas.")
-                        else:
-                            st.info("Seleccioná al menos una métrica para mostrar en el gráfico.")
+                        st.markdown("**Métricas visibles**")
+                        render_quality_history_mini_charts(history_chart_rows)
 
                         st.caption(
-                            "El gráfico muestra la evolución desde la versión más antigua hasta la más reciente. Si dos series coinciden exactamente, podés ocultar una desde 'Métricas visibles' para inspeccionarlas por separado."
+                            "Cada mini gráfico muestra la evolución desde la versión más antigua hasta la más reciente para Accuracy, Precision, Recall y F1."
                         )
                         st.markdown("---")
 
