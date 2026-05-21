@@ -9,7 +9,7 @@ import json
 import math
 import streamlit.components.v1 as components
 
-st.set_page_config(page_title="Galicia Guru", page_icon=":robot:", layout="wide")
+st.set_page_config(page_title="PoC", page_icon=":robot:", layout="wide")
 
 LOCAL_API_URL = "https://localhost:44321/api"
 CLOUD_API_URL_DEFAULT = "https://poc-guru-hdf0gvb2a2f4ehgf.eastus-01.azurewebsites.net/api"
@@ -1252,7 +1252,7 @@ def build_feedback_tracking_key(query_history_id=None, query_hash=None, original
         return f"qhsh:{(query_hash or '').strip()}"
     return f"q:{(original_query or '').strip().lower()}"
 
-st.title("🧠 Galicia Guru - Sistema de Conocimiento")
+st.title("🧠 PoC - Sistema de Conocimiento")
 
 st.markdown("---")
 
@@ -2409,7 +2409,7 @@ with tab3:
                 "below_threshold": "below_match",
             }
             label_map = {
-                "below_match": "Bajo umbral",
+                "below_match": "Bajo confianza",
                 "match": "Coincidencia",
                 "no_match": "Sin coincidencia",
             }
@@ -2554,7 +2554,7 @@ with tab3:
                                         "field": "Resultado",
                                         "type": "nominal",
                                         "scale": {
-                                            "domain": ["Bajo umbral", "Coincidencia", "Sin coincidencia"],
+                                            "domain": ["Bajo confianza", "Coincidencia", "Sin coincidencia"],
                                             "range": ["#f59e0b", "#2563eb", "#dc2626"],
                                         },
                                         "legend": {
@@ -2576,7 +2576,7 @@ with tab3:
                     st.caption(
                         " | ".join(
                             [
-                                f"Bajo umbral: {int(distribution_totals['below_match'])} ({(distribution_totals['below_match'] / total_distribution * 100) if total_distribution > 0 else 0:.2f}%)",
+                                f"Bajo confianza: {int(distribution_totals['below_match'])} ({(distribution_totals['below_match'] / total_distribution * 100) if total_distribution > 0 else 0:.2f}%)",
                                 f"Coincidencia: {int(distribution_totals['match'])} ({(distribution_totals['match'] / total_distribution * 100) if total_distribution > 0 else 0:.2f}%)",
                                 f"Sin coincidencia: {int(distribution_totals['no_match'])} ({(distribution_totals['no_match'] / total_distribution * 100) if total_distribution > 0 else 0:.2f}%)",
                             ]
