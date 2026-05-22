@@ -2991,6 +2991,7 @@ with testing_tab1:
             has_feedback = to_bool(item.get("hasUserFeedback", False))
             feedback_type = item.get("userFeedbackType", "")
             feedback_comment = item.get("feedbackComment", "")
+            similar_questions = item.get("similarQuestions", []) or []
 
             # Determinar color unificado: rojo si feedback neg o no_match, amarillo si below_threshold sin feedback neg, verde si match sin feedback neg
             if has_feedback and feedback_type == "negative":
@@ -3095,6 +3096,59 @@ with testing_tab1:
                         placeholder="EJ: SALDO_CONSULTA"
                     )
 
+                selected_similar_ids = []
+                st.markdown("---")
+                st.markdown("**Preguntas relacionadas**")
+
+                if similar_questions:
+                    st.markdown(
+                        """
+                        <style>
+                        div[data-testid="stDataEditor"] input[type="checkbox"] {
+                            accent-color: #dc2626 !important;
+                        }
+                        </style>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+
+                    similar_rows = []
+                    for similar in similar_questions:
+                        similar_rows.append(
+                            {
+                                "queryHistoryId": similar.get("queryHistoryId"),
+                                "Aplicar": to_bool(similar.get("selectedByDefault", True)),
+                                "Pregunta": similar.get("queryText", ""),
+                                "Similitud": round(to_float(similar.get("similarityScore", 0)) * 100, 1),
+                            }
+                        )
+
+                    similar_df = pd.DataFrame(similar_rows)
+                    edited_similar_df = st.data_editor(
+                        similar_df,
+                        key=f"review_similar_table_{item_id}",
+                        hide_index=True,
+                        use_container_width=True,
+                        disabled=["queryHistoryId", "Pregunta", "Similitud"],
+                        column_config={
+                            "queryHistoryId": None,
+                            "Aplicar": st.column_config.CheckboxColumn("Aplicar"),
+                            "Pregunta": st.column_config.TextColumn("Pregunta"),
+                            "Similitud": st.column_config.NumberColumn("Similitud", format="%.1f %%"),
+                        },
+                    )
+
+                    selected_similar_ids = (
+                        edited_similar_df.loc[edited_similar_df["Aplicar"] == True, "queryHistoryId"]
+                        .dropna()
+                        .astype(str)
+                        .tolist()
+                    )
+
+                    st.caption(f"Relacionadas detectadas: {len(similar_questions)} | Seleccionadas: {len(selected_similar_ids)}")
+                else:
+                    st.info("No se detectaron preguntas relacionadas para este ítem en el muestreo actual.")
+
                 agregar_regression = st.checkbox(
                     "Agregar al dataset de regresión",
                     value=True,
@@ -3114,6 +3168,8 @@ with testing_tab1:
                             "resueltoPor": st.session_state.get("auth_user", "streamlit-qa"),
                             "preguntaTexto": pregunta_texto.strip() if pregunta_texto.strip() else None,
                             "agregarAlRegressionDataset": agregar_regression and accion != "descartar",
+                            "applyToSelectedSimilar": True,
+                            "selectedSimilarQueryHistoryIds": selected_similar_ids,
                         }
 
                         if accion == "usar_existente":
