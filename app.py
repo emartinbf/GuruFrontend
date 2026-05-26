@@ -3185,8 +3185,14 @@ with testing_tab1:
                             response = api_request("POST", f"/qa/review-queue/{item_id}/resolve", json=payload)
 
                         if response and response.status_code in (200, 201):
-                            # Eliminar del listado
-                            updated_queue = [item for item in st.session_state.review_queue if item.get("id") != item_id]
+                            # Eliminar del listado el item principal y los relacionados seleccionados
+                            resolved_ids = {str(item_id)}
+                            resolved_ids.update(str(sim_id) for sim_id in selected_similar_ids if sim_id)
+
+                            updated_queue = [
+                                item for item in st.session_state.review_queue
+                                if str(item.get("id")) not in resolved_ids
+                            ]
                             st.session_state.review_queue = updated_queue
                             st.success("✅ Resolución guardada correctamente")
                             st.rerun()
