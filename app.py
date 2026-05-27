@@ -2908,28 +2908,15 @@ with tab3:
 
 with testing_tab1:
     st.subheader("Cola de revisión")
-    st.caption("Muestreo estratificado de ítems pendientes de revisión según segmentación de riesgo.")
-
-    # Tabla de segmentación
-    st.markdown("**Segmentación de Riesgo**")
-    segmentation_data = [
-        {"Segmento": "🔴 Alto", "Porcentaje": "60%", "Criterio": "Feedback negativo, Sin respuesta o Confianza < 0.70"},
-        {"Segmento": "🟡 Medio", "Porcentaje": "30%", "Criterio": "Baja Confianza >= 0.70"},
-        {"Segmento": "🟢 Bajo", "Porcentaje": "10%", "Criterio": "Coincidencia / Confianza alta"},
-    ]
-    st.dataframe(segmentation_data, use_container_width=True, hide_index=True)
-
-    st.markdown("---")
 
     # Input y botón de muestreo
-    st.markdown("**Generar Muestreo**")
     sample_col1, sample_col2 = st.columns([1, 1])
     with sample_col1:
         sample_count = st.number_input(
             "Cantidad de ítems a muestrear",
             min_value=1,
-            max_value=500,
-            value=20,
+            max_value=2000,
+            value=200,
             step=1,
             key="review_sample_count"
         )
@@ -2964,10 +2951,92 @@ with testing_tab1:
 
     # Mostrar cola
     review_items = st.session_state.get("review_queue", []) or []
-    
+
     if not review_items:
         st.info("Genera un muestreo para ver los ítems pendientes de revisión.")
     else:
+        # Filtro por ImpactLevel (PRIMERO)
+        st.markdown("**Filtrar por impacto**")
+        impact_counts = {}
+        for item in review_items:
+            impact = (item.get("impactLevel") or "bajo").lower().strip()
+            impact_counts[impact] = impact_counts.get(impact, 0) + 1
+
+        col_impact1, col_impact2, col_impact3 = st.columns([1, 1, 1])
+        
+        if "review_impact_filter" not in st.session_state:
+            st.session_state.review_impact_filter = {"alto", "medio", "bajo"}
+
+        selected_impacts = set()
+        with col_impact1:
+            if st.checkbox(
+                "🔴 Alto",
+                value="alto" in st.session_state.review_impact_filter,
+                key="impact_alto",
+                help=f"Feedback negativo, Sin respuesta o Confianza < 0.70 ({impact_counts.get('alto', 0)} items)"
+            ):
+                selected_impacts.add("alto")
+        
+        with col_impact2:
+            if st.checkbox(
+                "🟡 Medio",
+                value="medio" in st.session_state.review_impact_filter,
+                key="impact_medio",
+                help=f"Baja Confianza >= 0.70 ({impact_counts.get('medio', 0)} items)"
+            ):
+                selected_impacts.add("medio")
+        
+        with col_impact3:
+            if st.checkbox(
+                "🟢 Bajo",
+                value="bajo" in st.session_state.review_impact_filter,
+                key="impact_bajo",
+                help=f"Coincidencia / Confianza alta ({impact_counts.get('bajo', 0)} items)"
+            ):
+                selected_impacts.add("bajo")
+        
+        st.session_state.review_impact_filter = selected_impacts if selected_impacts else {"alto", "medio", "bajo"}
+
+        # Aplicar filtro de impacto
+        filtered_review_items = [
+            item
+            for item in review_items
+            if (item.get("impactLevel") or "bajo").lower() in st.session_state.review_impact_filter
+        ]
+
+        # Filtro por categoría (SEGUNDO)
+        st.markdown("**Filtrar por categoría**")
+        category_counts = {}
+        for item in filtered_review_items:
+            categoria = (item.get("categoria") or item.get("Categoria") or "Sin clasificar").strip() or "Sin clasificar"
+            category_counts[categoria] = category_counts.get(categoria, 0) + 1
+
+        category_options = ["__all__"] + sorted(category_counts.keys(), key=lambda value: value.lower())
+        category_labels = {"__all__": f"Todos ({len(filtered_review_items)})"}
+        category_labels.update({category: f"{category} ({count})" for category, count in category_counts.items()})
+
+        if "review_category_filter" not in st.session_state:
+            st.session_state.review_category_filter = "__all__"
+        elif st.session_state.review_category_filter not in category_options:
+            st.session_state.review_category_filter = "__all__"
+
+        selected_category = st.radio(
+            "Seleccionar categoría",
+            category_options,
+            format_func=lambda option: category_labels.get(option, option),
+            horizontal=True,
+            key="review_category_filter",
+        )
+
+        filtered_review_items = [
+            item
+            for item in filtered_review_items
+            if selected_category == "__all__"
+            or (item.get("categoria") or item.get("Categoria") or "Sin clasificar").strip() == selected_category
+        ]
+
+        st.caption(f"Mostrando {len(filtered_review_items)} de {len(review_items)} ítems")
+
         # Catálogo de respuestas para resoluciones
         respuestas_catalog = load_respuestas_catalog()
         answer_map = {
@@ -2977,7 +3046,7 @@ with testing_tab1:
         }
 
         # Mostrar cada ítem
-        for idx, item in enumerate(review_items):
+        for idx, item in enumerate(filtered_review_items):
             item_id = item.get("id")
             query = item.get("originalQuery", item.get("query", "N/A"))
             resultado = item.get("resultado", "N/A")
@@ -3058,14 +3127,14 @@ with testing_tab1:
                         "descartar": "Descartar (no amerita KB)"
                     }[x],
                     horizontal=True,
-                    key=f"review_accion_{idx}"
+                    key=f"review_accion_{item_id}"
                 )
 
                 # Campos según la acción (fuera del form para que se actualicen dinámicamente)
                 pregunta_texto = st.text_input(
                     "Texto de pregunta (opcional)",
                     value=query,
-                    key=f"review_pregunta_{idx}",
+                    key=f"review_pregunta_{item_id}",
                     help="Si no se completa, se usa la query original"
                 )
 
@@ -3077,7 +3146,7 @@ with testing_tab1:
                     selected_respuesta = st.selectbox(
                         "Seleccionar respuesta existente",
                         [""] + list(answer_map.keys()),
-                        key=f"review_respuesta_select_{idx}"
+                        key=f"review_respuesta_select_{item_id}"
                     )
                     if selected_respuesta:
                         respuesta_id_existente = answer_map[selected_respuesta].get("id")
@@ -3087,12 +3156,12 @@ with testing_tab1:
                         "Texto de nueva respuesta",
                         value=ai_draft_answer,
                         height=120,
-                        key=f"review_nueva_respuesta_{idx}",
+                        key=f"review_nueva_respuesta_{item_id}",
                         placeholder="Escribir la nueva respuesta..."
                     )
                     nueva_respuesta_key = st.text_input(
                         "CLAVE_DE_RESPUESTA (opcional)",
-                        key=f"review_nueva_key_{idx}",
+                        key=f"review_nueva_key_{item_id}",
                         placeholder="EJ: SALDO_CONSULTA"
                     )
 
@@ -3152,10 +3221,10 @@ with testing_tab1:
                 agregar_regression = st.checkbox(
                     "Agregar al dataset de regresión",
                     value=True,
-                    key=f"review_regression_{idx}"
+                    key=f"review_regression_{item_id}"
                 )
 
-                if st.button("Guardar resolución", type="primary", key=f"review_guardar_{idx}"):
+                if st.button("Guardar resolución", type="primary", key=f"review_guardar_{item_id}"):
                     # Validar
                     if accion == "usar_existente" and not respuesta_id_existente:
                         st.error("Selecciona una respuesta existente")
