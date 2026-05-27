@@ -1920,7 +1920,7 @@ with tab4:
 
     testing_tab1, testing_tab_insights, testing_tab2, testing_tab3, testing_tab4, testing_tab5, testing_tab6 = st.tabs([
         "📋 Cola de revisión",
-        "💡 Insights QA",
+        "💡 Insights Analisis",
         "🧪 Regression Dataset",
         "🟨 Golden Dataset",
         "🔍 Detectar Duplicados",
@@ -2956,322 +2956,351 @@ with testing_tab1:
     if not review_items:
         st.info("Genera un muestreo para ver los ítems pendientes de revisión.")
     else:
-        # Filtro por ImpactLevel (PRIMERO)
-        st.markdown("**Filtrar por impacto**")
-        impact_counts = {}
-        for item in review_items:
-            impact = (item.get("impactLevel") or "bajo").lower().strip()
-            impact_counts[impact] = impact_counts.get(impact, 0) + 1
+        filters_col, content_col = st.columns([1, 3], gap="large")
 
-        col_impact1, col_impact2, col_impact3 = st.columns([1, 1, 1])
-        
-        if "review_impact_filter" not in st.session_state:
-            st.session_state.review_impact_filter = {"alto", "medio", "bajo"}
+        # Aplicar filtros en panel lateral para una UX más clara
+        with filters_col:
+            st.markdown("### Filtros")
+            st.markdown("**Filtrar por impacto**")
 
-        selected_impacts = set()
-        with col_impact1:
+            def classify_impact_filter(item):
+                item_resultado = (item.get("resultado") or "").strip().lower()
+                item_feedback_type = (item.get("userFeedbackType") or "").strip().lower()
+                item_has_feedback = to_bool(item.get("hasUserFeedback", False))
+
+                if item_has_feedback and item_feedback_type == "negative":
+                    return "feedback_negativo"
+                if item_resultado == "no_match":
+                    return "sin_respuesta"
+                if item_resultado == "below_threshold":
+                    return "confianza_baja"
+                return "coincidencia"
+
+            valid_impact_filters = {"feedback_negativo", "sin_respuesta", "confianza_baja", "coincidencia"}
+            impact_counts = {key: 0 for key in valid_impact_filters}
+            for item in review_items:
+                impact_key = classify_impact_filter(item)
+                impact_counts[impact_key] = impact_counts.get(impact_key, 0) + 1
+
+            if "review_impact_filter" not in st.session_state or not st.session_state.review_impact_filter:
+                st.session_state.review_impact_filter = valid_impact_filters.copy()
+            elif not set(st.session_state.review_impact_filter).issubset(valid_impact_filters):
+                st.session_state.review_impact_filter = valid_impact_filters.copy()
+
+            selected_impacts = set()
             if st.checkbox(
-                "🔴 Alto",
-                value="alto" in st.session_state.review_impact_filter,
-                key="impact_alto",
-                help=f"Feedback negativo, Sin respuesta o Confianza < 0.70 ({impact_counts.get('alto', 0)} items)"
+                f"🔴 Feedback negativo ({impact_counts.get('feedback_negativo', 0)})",
+                value="feedback_negativo" in st.session_state.review_impact_filter,
+                key="impact_feedback_negativo",
+                help="Consultas con feedback negativo del usuario",
             ):
-                selected_impacts.add("alto")
-        
-        with col_impact2:
+                selected_impacts.add("feedback_negativo")
             if st.checkbox(
-                "🟡 Medio",
-                value="medio" in st.session_state.review_impact_filter,
-                key="impact_medio",
-                help=f"Baja Confianza >= 0.70 ({impact_counts.get('medio', 0)} items)"
+                f"🔴 Sin respuesta ({impact_counts.get('sin_respuesta', 0)})",
+                value="sin_respuesta" in st.session_state.review_impact_filter,
+                key="impact_sin_respuesta",
+                help="Consultas que terminaron sin respuesta",
             ):
-                selected_impacts.add("medio")
-        
-        with col_impact3:
+                selected_impacts.add("sin_respuesta")
             if st.checkbox(
-                "🟢 Bajo",
-                value="bajo" in st.session_state.review_impact_filter,
-                key="impact_bajo",
-                help=f"Coincidencia / Confianza alta ({impact_counts.get('bajo', 0)} items)"
+                f"🟡 Confianza baja ({impact_counts.get('confianza_baja', 0)})",
+                value="confianza_baja" in st.session_state.review_impact_filter,
+                key="impact_confianza_baja",
+                help="Consultas below_threshold",
             ):
-                selected_impacts.add("bajo")
-        
-        st.session_state.review_impact_filter = selected_impacts if selected_impacts else {"alto", "medio", "bajo"}
+                selected_impacts.add("confianza_baja")
+            if st.checkbox(
+                f"🟢 Coincidencia ({impact_counts.get('coincidencia', 0)})",
+                value="coincidencia" in st.session_state.review_impact_filter,
+                key="impact_coincidencia",
+                help="Consultas respondidas con coincidencia",
+            ):
+                selected_impacts.add("coincidencia")
 
-        # Aplicar filtro de impacto
-        filtered_review_items = [
-            item
-            for item in review_items
-            if (item.get("impactLevel") or "bajo").lower() in st.session_state.review_impact_filter
-        ]
+            st.session_state.review_impact_filter = selected_impacts if selected_impacts else valid_impact_filters.copy()
 
-        # Filtro por categoría (SEGUNDO)
-        st.markdown("**Filtrar por categoría**")
-        category_counts = {}
-        for item in filtered_review_items:
-            categoria = (item.get("categoria") or item.get("Categoria") or "Sin clasificar").strip() or "Sin clasificar"
-            category_counts[categoria] = category_counts.get(categoria, 0) + 1
+            filtered_review_items = [
+                item
+                for item in review_items
+                if classify_impact_filter(item) in st.session_state.review_impact_filter
+            ]
 
-        category_options = ["__all__"] + sorted(category_counts.keys(), key=lambda value: value.lower())
-        category_labels = {"__all__": f"Todos ({len(filtered_review_items)})"}
-        category_labels.update({category: f"{category} ({count})" for category, count in category_counts.items()})
+            st.markdown("**Filtrar por categoría**")
+            category_counts = {}
+            for item in filtered_review_items:
+                categoria = (item.get("categoria") or item.get("Categoria") or "Sin clasificar").strip() or "Sin clasificar"
+                category_counts[categoria] = category_counts.get(categoria, 0) + 1
 
-        if "review_category_filter" not in st.session_state:
-            st.session_state.review_category_filter = "__all__"
-        elif st.session_state.review_category_filter not in category_options:
-            st.session_state.review_category_filter = "__all__"
+            sorted_categories = sorted(category_counts.items(), key=lambda item: (-item[1], item[0].lower()))
+            category_options = ["__all__"] + [category for category, _ in sorted_categories]
+            category_labels = {"__all__": f"Todos ({len(filtered_review_items)})"}
+            category_labels.update({category: f"{category} ({count})" for category, count in sorted_categories})
 
-        selected_category = st.radio(
-            "Seleccionar categoría",
-            category_options,
-            format_func=lambda option: category_labels.get(option, option),
-            horizontal=True,
-            key="review_category_filter",
-        )
+            if "review_category_filter" not in st.session_state:
+                st.session_state.review_category_filter = "__all__"
+            elif st.session_state.review_category_filter not in category_options:
+                st.session_state.review_category_filter = "__all__"
 
-        filtered_review_items = [
-            item
-            for item in filtered_review_items
-            if selected_category == "__all__"
-            or (item.get("categoria") or item.get("Categoria") or "Sin clasificar").strip() == selected_category
-        ]
-
-        st.caption(f"Mostrando {len(filtered_review_items)} de {len(review_items)} ítems")
-
-        # Catálogo de respuestas para resoluciones
-        respuestas_catalog = load_respuestas_catalog()
-        answer_map = {
-            f"{r.get('id')} [{r.get('answerKey') or 'Sin key'}]": r
-            for r in respuestas_catalog
-            if r.get("id")
-        }
-
-        # Mostrar cada ítem
-        for idx, item in enumerate(filtered_review_items):
-            item_id = item.get("id")
-            query = item.get("originalQuery", item.get("query", "N/A"))
-            resultado = item.get("resultado", "N/A")
-            score = to_float(item.get("score", 0))
-            impact_level = item.get("impactLevel", "bajo").lower()
-            review_status = item.get("reviewStatus", "pendiente_revision")
-            ai_draft_status = item.get("aiDraftStatus", "")
-            ai_draft_answer = item.get("aiDraftAnswer", "")
-            ai_draft_source_file = item.get("aiDraftSourceFile", "")
-            ai_draft_source_page = item.get("aiDraftSourcePage", "")
-            has_feedback = to_bool(item.get("hasUserFeedback", False))
-            feedback_type = item.get("userFeedbackType", "")
-            feedback_comment = item.get("feedbackComment", "")
-            similar_questions = item.get("similarQuestions", []) or []
-
-            # Determinar color unificado: rojo si feedback neg o no_match, amarillo si below_threshold sin feedback neg, verde si match sin feedback neg
-            if has_feedback and feedback_type == "negative":
-                status_badge = "🔴"
-                status_label = "Feedback negativo"
-            elif resultado == "no_match":
-                status_badge = "🔴"
-                status_label = "Sin respuesta"
-            elif resultado == "below_threshold":
-                status_badge = "🟡"
-                status_label = "Confianza baja"
+            if hasattr(st, "pills"):
+                selected_category = st.pills(
+                    "Seleccionar categoría",
+                    category_options,
+                    format_func=lambda option: category_labels.get(option, option),
+                    key="review_category_filter",
+                )
             else:
-                status_badge = "🟢"
-                status_label = "Coincidencia"
-
-            title = f"{status_badge} {status_label} | {query[:80]}"
-
-            with st.expander(title, expanded=False):
-                col1, col2 = st.columns([2, 1])
-                
-                with col1:
-                    st.write(f"**Consulta:** {query}")
-                    st.write(f"**Confianza:** {score:.3f} | **Estado:** {review_status}")
-                    st.write(f"**Resultado técnico:** {resultado}")
-                    
-                    # Mostrar respuesta proporcionada
-                    answer_key = item.get("answerKey", "")
-                    answer_text = item.get("answerText", "")
-                    if answer_key or answer_text:
-                        st.markdown("---")
-                        if answer_key:
-                            st.write(f"**Clave de Respuesta:** {answer_key}")
-                        if answer_text:
-                            st.write(f"**Respuesta proporcionada:** {answer_text}")
-                    
-                    if has_feedback:
-                        st.caption(f"💬 Comentario del usuario: {feedback_comment or '(sin comentario)'}")
-                    if ai_draft_status == "generada" and ai_draft_answer:
-                        st.info(f"💡 Borrador IA disponible: {ai_draft_answer[:200]}...")
-                        # Mostrar fuente del borrador IA si está disponible
-                        if ai_draft_source_file or ai_draft_source_page:
-                            fuente = f"**Fuente sugerencia IA:** "
-                            if ai_draft_source_file:
-                                fuente += f"Archivo: {ai_draft_source_file}"
-                            if ai_draft_source_page:
-                                fuente += f" | Página: {ai_draft_source_page}"
-                            st.caption(fuente)
-
-                with col2:
-                    feedback_label = "Sin feedback" if not has_feedback else ("👍 Positivo" if feedback_type == "positive" else "👎 Negativo")
-                    st.markdown(f'<p style="font-size:0.8rem;color:grey;margin-bottom:2px">Feedback</p><p style="font-size:1.25rem;font-weight:700;margin:0">{feedback_label}</p>', unsafe_allow_html=True)
-
-                # Panel de resolución
-                st.markdown("---")
-                st.markdown("**Resolver**")
-
-                # Radio button fuera del form para que rerune y muestre/oculte campos dinámicamente
-                accion = st.radio(
-                    "Acción",
-                    ["usar_existente", "crear_nueva", "descartar"],
-                    format_func=lambda x: {
-                        "usar_existente": "Usar respuesta existente",
-                        "crear_nueva": "Crear nueva respuesta",
-                        "descartar": "Descartar (no amerita KB)"
-                    }[x],
-                    horizontal=True,
-                    key=f"review_accion_{item_id}"
+                selected_category = st.radio(
+                    "Seleccionar categoría",
+                    category_options,
+                    format_func=lambda option: category_labels.get(option, option),
+                    key="review_category_filter",
                 )
 
-                # Campos según la acción (fuera del form para que se actualicen dinámicamente)
-                pregunta_texto = st.text_input(
-                    "Texto de pregunta (opcional)",
-                    value=query,
-                    key=f"review_pregunta_{item_id}",
-                    help="Si no se completa, se usa la query original"
-                )
+            selected_category = selected_category or "__all__"
 
-                respuesta_id_existente = None
-                nueva_respuesta_texto = ""
-                nueva_respuesta_key = ""
+            filtered_review_items = [
+                item
+                for item in filtered_review_items
+                if selected_category == "__all__"
+                or (item.get("categoria") or item.get("Categoria") or "Sin clasificar").strip() == selected_category
+            ]
 
-                if accion == "usar_existente":
-                    selected_respuesta = st.selectbox(
-                        "Seleccionar respuesta existente",
-                        [""] + list(answer_map.keys()),
-                        key=f"review_respuesta_select_{item_id}"
+        with content_col:
+            st.caption(f"Mostrando {len(filtered_review_items)} de {len(review_items)} ítems")
+
+            # Catálogo de respuestas para resoluciones
+            respuestas_catalog = load_respuestas_catalog()
+            answer_map = {
+                f"{r.get('id')} [{r.get('answerKey') or 'Sin key'}]": r
+                for r in respuestas_catalog
+                if r.get("id")
+            }
+
+            # Mostrar cada ítem
+            for idx, item in enumerate(filtered_review_items):
+                item_id = item.get("id")
+                query = item.get("originalQuery", item.get("query", "N/A"))
+                resultado = item.get("resultado", "N/A")
+                score = to_float(item.get("score", 0))
+                impact_level = item.get("impactLevel", "bajo").lower()
+                review_status = item.get("reviewStatus", "pendiente_revision")
+                ai_draft_status = item.get("aiDraftStatus", "")
+                ai_draft_answer = item.get("aiDraftAnswer", "")
+                ai_draft_source_file = item.get("aiDraftSourceFile", "")
+                ai_draft_source_page = item.get("aiDraftSourcePage", "")
+                has_feedback = to_bool(item.get("hasUserFeedback", False))
+                feedback_type = item.get("userFeedbackType", "")
+                feedback_comment = item.get("feedbackComment", "")
+                similar_questions = item.get("similarQuestions", []) or []
+
+                # Determinar color unificado: rojo si feedback neg o no_match, amarillo si below_threshold sin feedback neg, verde si match sin feedback neg
+                if has_feedback and feedback_type == "negative":
+                    status_badge = "🔴"
+                    status_label = "Feedback negativo"
+                elif resultado == "no_match":
+                    status_badge = "🔴"
+                    status_label = "Sin respuesta"
+                elif resultado == "below_threshold":
+                    status_badge = "🟡"
+                    status_label = "Confianza baja"
+                else:
+                    status_badge = "🟢"
+                    status_label = "Coincidencia"
+
+                title = f"{status_badge} {status_label} | {query[:80]}"
+
+                with st.expander(title, expanded=False):
+                    col1, col2 = st.columns([2, 1])
+
+                    with col1:
+                        st.write(f"**Consulta:** {query}")
+                        st.write(f"**Confianza:** {score:.3f} | **Estado:** {review_status}")
+                        st.write(f"**Resultado técnico:** {resultado}")
+
+                        # Mostrar respuesta proporcionada
+                        answer_key = item.get("answerKey", "")
+                        answer_text = item.get("answerText", "")
+                        if answer_key or answer_text:
+                            st.markdown("---")
+                            if answer_key:
+                                st.write(f"**Clave de Respuesta:** {answer_key}")
+                            if answer_text:
+                                st.write(f"**Respuesta proporcionada:** {answer_text}")
+
+                        if has_feedback:
+                            st.caption(f"💬 Comentario del usuario: {feedback_comment or '(sin comentario)'}")
+                        if ai_draft_status == "generada" and ai_draft_answer:
+                            st.info(f"💡 Borrador IA disponible: {ai_draft_answer[:200]}...")
+                            # Mostrar fuente del borrador IA si está disponible
+                            if ai_draft_source_file or ai_draft_source_page:
+                                fuente = f"**Fuente sugerencia IA:** "
+                                if ai_draft_source_file:
+                                    fuente += f"Archivo: {ai_draft_source_file}"
+                                if ai_draft_source_page:
+                                    fuente += f" | Página: {ai_draft_source_page}"
+                                st.caption(fuente)
+
+                    with col2:
+                        feedback_label = "Sin feedback" if not has_feedback else ("👍 Positivo" if feedback_type == "positive" else "👎 Negativo")
+                        st.markdown(f'<p style="font-size:0.8rem;color:grey;margin-bottom:2px">Feedback</p><p style="font-size:1.25rem;font-weight:700;margin:0">{feedback_label}</p>', unsafe_allow_html=True)
+
+                    # Panel de resolución
+                    st.markdown("---")
+                    st.markdown("**Resolver**")
+
+                    # Radio button fuera del form para que rerune y muestre/oculte campos dinámicamente
+                    accion = st.radio(
+                        "Acción",
+                        ["usar_existente", "crear_nueva", "descartar"],
+                        format_func=lambda x: {
+                            "usar_existente": "Usar respuesta existente",
+                            "crear_nueva": "Crear nueva respuesta",
+                            "descartar": "Descartar (no amerita KB)"
+                        }[x],
+                        horizontal=True,
+                        key=f"review_accion_{item_id}"
                     )
-                    if selected_respuesta:
-                        respuesta_id_existente = answer_map[selected_respuesta].get("id")
 
-                elif accion == "crear_nueva":
-                    nueva_respuesta_texto = st.text_area(
-                        "Texto de nueva respuesta",
-                        value=ai_draft_answer,
-                        height=120,
-                        key=f"review_nueva_respuesta_{item_id}",
-                        placeholder="Escribir la nueva respuesta..."
-                    )
-                    nueva_respuesta_key = st.text_input(
-                        "CLAVE_DE_RESPUESTA (opcional)",
-                        key=f"review_nueva_key_{item_id}",
-                        placeholder="EJ: SALDO_CONSULTA"
+                    # Campos según la acción (fuera del form para que se actualicen dinámicamente)
+                    pregunta_texto = st.text_input(
+                        "Texto de pregunta (opcional)",
+                        value=query,
+                        key=f"review_pregunta_{item_id}",
+                        help="Si no se completa, se usa la query original"
                     )
 
-                selected_similar_ids = []
-                st.markdown("---")
-                st.markdown("**Preguntas relacionadas**")
+                    respuesta_id_existente = None
+                    nueva_respuesta_texto = ""
+                    nueva_respuesta_key = ""
 
-                if similar_questions:
-                    st.markdown(
-                        """
-                        <style>
-                        div[data-testid="stDataEditor"] input[type="checkbox"] {
-                            accent-color: #dc2626 !important;
-                        }
-                        </style>
-                        """,
-                        unsafe_allow_html=True,
-                    )
+                    if accion == "usar_existente":
+                        selected_respuesta = st.selectbox(
+                            "Seleccionar respuesta existente",
+                            [""] + list(answer_map.keys()),
+                            key=f"review_respuesta_select_{item_id}"
+                        )
+                        if selected_respuesta:
+                            respuesta_id_existente = answer_map[selected_respuesta].get("id")
 
-                    similar_rows = []
-                    for similar in similar_questions:
-                        similar_rows.append(
-                            {
-                                "queryHistoryId": similar.get("queryHistoryId"),
-                                "Aplicar": to_bool(similar.get("selectedByDefault", True)),
-                                "Pregunta": similar.get("queryText", ""),
-                                "Similitud": round(to_float(similar.get("similarityScore", 0)) * 100, 1),
-                            }
+                    elif accion == "crear_nueva":
+                        nueva_respuesta_texto = st.text_area(
+                            "Texto de nueva respuesta",
+                            value=ai_draft_answer,
+                            height=120,
+                            key=f"review_nueva_respuesta_{item_id}",
+                            placeholder="Escribir la nueva respuesta..."
+                        )
+                        nueva_respuesta_key = st.text_input(
+                            "CLAVE_DE_RESPUESTA (opcional)",
+                            key=f"review_nueva_key_{item_id}",
+                            placeholder="EJ: SALDO_CONSULTA"
                         )
 
-                    similar_df = pd.DataFrame(similar_rows)
-                    edited_similar_df = st.data_editor(
-                        similar_df,
-                        key=f"review_similar_table_{item_id}",
-                        hide_index=True,
-                        use_container_width=True,
-                        disabled=["queryHistoryId", "Pregunta", "Similitud"],
-                        column_config={
-                            "queryHistoryId": None,
-                            "Aplicar": st.column_config.CheckboxColumn("Aplicar"),
-                            "Pregunta": st.column_config.TextColumn("Pregunta"),
-                            "Similitud": st.column_config.NumberColumn("Similitud", format="%.1f %%"),
-                        },
-                    )
+                    selected_similar_ids = []
+                    st.markdown("---")
+                    st.markdown("**Preguntas relacionadas**")
 
-                    selected_similar_ids = (
-                        edited_similar_df.loc[edited_similar_df["Aplicar"] == True, "queryHistoryId"]
-                        .dropna()
-                        .astype(str)
-                        .tolist()
-                    )
+                    if similar_questions:
+                        st.markdown(
+                            """
+                            <style>
+                            div[data-testid="stDataEditor"] input[type="checkbox"] {
+                                accent-color: #dc2626 !important;
+                            }
+                            </style>
+                            """,
+                            unsafe_allow_html=True,
+                        )
 
-                    st.caption(f"Relacionadas detectadas: {len(similar_questions)} | Seleccionadas: {len(selected_similar_ids)}")
-                else:
-                    st.info("No se detectaron preguntas relacionadas para este ítem en el muestreo actual.")
+                        similar_rows = []
+                        for similar in similar_questions:
+                            similar_rows.append(
+                                {
+                                    "queryHistoryId": similar.get("queryHistoryId"),
+                                    "Aplicar": to_bool(similar.get("selectedByDefault", True)),
+                                    "Pregunta": similar.get("queryText", ""),
+                                    "Similitud": round(to_float(similar.get("similarityScore", 0)) * 100, 1),
+                                }
+                            )
 
-                agregar_regression = st.checkbox(
-                    "Agregar al dataset de regresión",
-                    value=True,
-                    key=f"review_regression_{item_id}"
-                )
+                        similar_df = pd.DataFrame(similar_rows)
+                        edited_similar_df = st.data_editor(
+                            similar_df,
+                            key=f"review_similar_table_{item_id}",
+                            hide_index=True,
+                            use_container_width=True,
+                            disabled=["queryHistoryId", "Pregunta", "Similitud"],
+                            column_config={
+                                "queryHistoryId": None,
+                                "Aplicar": st.column_config.CheckboxColumn("Aplicar"),
+                                "Pregunta": st.column_config.TextColumn("Pregunta"),
+                                "Similitud": st.column_config.NumberColumn("Similitud", format="%.1f %%"),
+                            },
+                        )
 
-                if st.button("Guardar resolución", type="primary", key=f"review_guardar_{item_id}"):
-                    # Validar
-                    if accion == "usar_existente" and not respuesta_id_existente:
-                        st.error("Selecciona una respuesta existente")
-                    elif accion == "crear_nueva" and not nueva_respuesta_texto.strip():
-                        st.error("Completa el texto de la nueva respuesta")
+                        selected_similar_ids = (
+                            edited_similar_df.loc[edited_similar_df["Aplicar"] == True, "queryHistoryId"]
+                            .dropna()
+                            .astype(str)
+                            .tolist()
+                        )
+
+                        st.caption(f"Relacionadas detectadas: {len(similar_questions)} | Seleccionadas: {len(selected_similar_ids)}")
                     else:
-                        # Construir payload
-                        payload = {
-                            "accion": accion,
-                            "resueltoPor": st.session_state.get("auth_user", "streamlit-qa"),
-                            "preguntaTexto": pregunta_texto.strip() if pregunta_texto.strip() else None,
-                            "agregarAlRegressionDataset": agregar_regression and accion != "descartar",
-                            "applyToSelectedSimilar": True,
-                            "selectedSimilarQueryHistoryIds": selected_similar_ids,
-                        }
+                        st.info("No se detectaron preguntas relacionadas para este ítem en el muestreo actual.")
 
-                        if accion == "usar_existente":
-                            payload["respuestaIdExistente"] = respuesta_id_existente
-                        elif accion == "crear_nueva":
-                            payload["nuevaRespuestaTexto"] = nueva_respuesta_texto.strip()
-                            payload["nuevaRespuestaAnswerKey"] = (nueva_respuesta_key.strip().upper() if nueva_respuesta_key.strip() else None)
-                        elif accion == "descartar":
-                            payload["observaciones"] = "ok"
+                    agregar_regression = st.checkbox(
+                        "Agregar al dataset de regresión",
+                        value=True,
+                        key=f"review_regression_{item_id}"
+                    )
 
-                        # Enviar
-                        with st.spinner("Guardando resolución..."):
-                            response = api_request("POST", f"/qa/review-queue/{item_id}/resolve", json=payload)
+                    if st.button("Guardar resolución", type="primary", key=f"review_guardar_{item_id}"):
+                        # Validar
+                        if accion == "usar_existente" and not respuesta_id_existente:
+                            st.error("Selecciona una respuesta existente")
+                        elif accion == "crear_nueva" and not nueva_respuesta_texto.strip():
+                            st.error("Completa el texto de la nueva respuesta")
+                        else:
+                            # Construir payload
+                            payload = {
+                                "accion": accion,
+                                "resueltoPor": st.session_state.get("auth_user", "streamlit-qa"),
+                                "preguntaTexto": pregunta_texto.strip() if pregunta_texto.strip() else None,
+                                "agregarAlRegressionDataset": agregar_regression and accion != "descartar",
+                                "applyToSelectedSimilar": True,
+                                "selectedSimilarQueryHistoryIds": selected_similar_ids,
+                            }
 
-                        if response and response.status_code in (200, 201):
-                            # Eliminar del listado el item principal y los relacionados seleccionados
-                            resolved_ids = {str(item_id)}
-                            resolved_ids.update(str(sim_id) for sim_id in selected_similar_ids if sim_id)
+                            if accion == "usar_existente":
+                                payload["respuestaIdExistente"] = respuesta_id_existente
+                            elif accion == "crear_nueva":
+                                payload["nuevaRespuestaTexto"] = nueva_respuesta_texto.strip()
+                                payload["nuevaRespuestaAnswerKey"] = (nueva_respuesta_key.strip().upper() if nueva_respuesta_key.strip() else None)
+                            elif accion == "descartar":
+                                payload["observaciones"] = "ok"
 
-                            updated_queue = [
-                                item for item in st.session_state.review_queue
-                                if str(item.get("id")) not in resolved_ids
-                            ]
-                            st.session_state.review_queue = updated_queue
-                            st.success("✅ Resolución guardada correctamente")
-                            st.rerun()
-                        elif response:
-                            st.error("❌ Error al guardar la resolución")
-                            render_error_response(response)
+                            # Enviar
+                            with st.spinner("Guardando resolución..."):
+                                response = api_request("POST", f"/qa/review-queue/{item_id}/resolve", json=payload)
+
+                            if response and response.status_code in (200, 201):
+                                # Eliminar del listado el item principal y los relacionados seleccionados
+                                resolved_ids = {str(item_id)}
+                                resolved_ids.update(str(sim_id) for sim_id in selected_similar_ids if sim_id)
+
+                                updated_queue = [
+                                    item for item in st.session_state.review_queue
+                                    if str(item.get("id")) not in resolved_ids
+                                ]
+                                st.session_state.review_queue = updated_queue
+                                st.success("✅ Resolución guardada correctamente")
+                                st.rerun()
+                            elif response:
+                                st.error("❌ Error al guardar la resolución")
+                                render_error_response(response)
 
 with testing_tab_insights:
-    st.subheader("Insights QA - Resumen Mensual")
     st.caption("Análisis consolidado de consultas, tasas de respuesta y recomendaciones de mejora generadas por IA")
 
     if "qa_insights_data" not in st.session_state:
@@ -3295,7 +3324,7 @@ with testing_tab_insights:
         )
     with insights_col3:
         st.write("")
-        load_insights = st.button("Cargar Insights", type="primary", key="btn_load_insights")
+        load_insights = st.button("Generar Análisis", type="primary", key="btn_load_insights")
 
     if load_insights:
         from_dt = datetime.combine(insights_from, time.min).isoformat()
