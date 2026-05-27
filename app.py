@@ -1918,8 +1918,9 @@ with tab4:
     if "quality_batch_report" not in st.session_state:
         st.session_state.quality_batch_report = None
 
-    testing_tab1, testing_tab2, testing_tab3, testing_tab4, testing_tab5, testing_tab6 = st.tabs([
+    testing_tab1, testing_tab_insights, testing_tab2, testing_tab3, testing_tab4, testing_tab5, testing_tab6 = st.tabs([
         "📋 Cola de revisión",
+        "💡 Insights QA",
         "🧪 Regression Dataset",
         "🟨 Golden Dataset",
         "🔍 Detectar Duplicados",
@@ -3268,6 +3269,225 @@ with testing_tab1:
                         elif response:
                             st.error("❌ Error al guardar la resolución")
                             render_error_response(response)
+
+with testing_tab_insights:
+    st.subheader("Insights QA - Resumen Mensual")
+    st.caption("Análisis consolidado de consultas, tasas de respuesta y recomendaciones de mejora generadas por IA")
+
+    if "qa_insights_data" not in st.session_state:
+        st.session_state.qa_insights_data = None
+    if "qa_insights_loading" not in st.session_state:
+        st.session_state.qa_insights_loading = False
+
+    # Selector de rango de fechas
+    insights_col1, insights_col2, insights_col3 = st.columns([2, 2, 1])
+    with insights_col1:
+        insights_from = st.date_input(
+            "Desde",
+            value=datetime.now().date() - timedelta(days=30),
+            key="insights_from"
+        )
+    with insights_col2:
+        insights_to = st.date_input(
+            "Hasta",
+            value=datetime.now().date(),
+            key="insights_to"
+        )
+    with insights_col3:
+        st.write("")
+        load_insights = st.button("Cargar Insights", type="primary", key="btn_load_insights")
+
+    if load_insights:
+        from_dt = datetime.combine(insights_from, time.min).isoformat()
+        to_dt = datetime.combine(insights_to, time.max).isoformat()
+        params = {"from": from_dt, "to": to_dt}
+
+        with st.spinner("Cargando insights QA..."):
+            response = api_request("GET", "/qa/insights", params=params)
+
+        if response and response.status_code == 200:
+            st.session_state.qa_insights_data = response.json()
+            st.success("✅ Insights cargados correctamente")
+        elif response:
+            st.error("Error al cargar insights")
+            render_error_response(response)
+
+    insights_data = st.session_state.get("qa_insights_data")
+    
+    if not insights_data:
+        st.info("Selecciona un rango de fechas y presiona 'Cargar Insights' para ver el análisis.")
+    else:
+        # Extraer datos
+        period = insights_data.get("period", {})
+        kpis = insights_data.get("kpis", {})
+        by_week = insights_data.get("byWeek", [])
+        by_category = insights_data.get("byCategory", [])
+        most_consulted = insights_data.get("mostConsultedCategories", [])
+        best_categories = insights_data.get("bestCategories", [])
+        worst_categories = insights_data.get("worstCategories", [])
+        priority_categories = insights_data.get("priorityCategories", [])
+        llm_report = insights_data.get("llmReport", {})
+
+        # KPIs principales
+        st.markdown("---")
+        st.markdown("**KPIs Principales**")
+        k1, k2, k3, k4, k5, k6 = st.columns(6)
+        
+        with k1:
+            st.metric("Total Consultas", int(kpis.get("totalConsultas", 0)))
+        with k2:
+            st.metric("Respondidas", int(kpis.get("answered", 0)))
+        with k3:
+            st.metric("No Respondidas", int(kpis.get("notAnswered", 0)))
+        with k4:
+            st.metric("Flagged", int(kpis.get("flagged", 0)))
+        with k5:
+            st.metric("Pendientes Revisión", int(kpis.get("pendientesRevision", 0)))
+        with k6:
+            tasa_resp = float(kpis.get("tasaRespuesta", 0)) * 100
+            st.metric("Tasa Respuesta", f"{tasa_resp:.1f}%")
+
+        # Reporte LLM
+        st.markdown("---")
+        st.markdown("**Resumen Ejecutivo (Generado por IA)**")
+        
+        if llm_report.get("executiveSummary"):
+            st.info(llm_report.get("executiveSummary", ""))
+        
+        if llm_report.get("keyFindings"):
+            st.markdown("**Hallazgos Clave:**")
+            for finding in llm_report.get("keyFindings", []):
+                st.write(f"• {finding}")
+        
+        if llm_report.get("recommendedActions"):
+            st.markdown("**Acciones Recomendadas:**")
+            for action in llm_report.get("recommendedActions", []):
+                st.write(f"• {action}")
+
+        # Orden de prioridades del LLM
+        if llm_report.get("priorityOrder"):
+            st.markdown("**Prioridades de Trabajo (según IA):**")
+            priority_rows = []
+            for idx, item in enumerate(llm_report.get("priorityOrder", []), 1):
+                priority_rows.append({
+                    "Orden": idx,
+                    "Categoría": item.get("categoria", ""),
+                    "Motivo": item.get("motivo", ""),
+                    "Beneficio Esperado": item.get("beneficioEsperado", "")
+                })
+            if priority_rows:
+                st.dataframe(priority_rows, use_container_width=True, hide_index=True)
+
+        # Desglose semanal
+        st.markdown("---")
+        st.markdown("**Desglose Semanal**")
+        if by_week:
+            weekly_rows = []
+            for week in by_week:
+                weekly_rows.append({
+                    "Semana": week.get("semana", ""),
+                    "Respondidas": int(week.get("answered", 0)),
+                    "No Respondidas": int(week.get("notAnswered", 0)),
+                    "Flagged": int(week.get("flagged", 0)),
+                    "Total": int(week.get("total", 0))
+                })
+            st.dataframe(weekly_rows, use_container_width=True, hide_index=True)
+        else:
+            st.info("Sin datos semanales disponibles")
+
+        # Categorías prioritarias
+        st.markdown("---")
+        st.markdown("**Categorías Prioritarias (Score de Impacto)**")
+        if priority_categories:
+            priority_rows = []
+            for cat in priority_categories:
+                priority_rows.append({
+                    "Categoría": cat.get("categoria", ""),
+                    "Score": round(float(cat.get("priorityScore", 0)), 2),
+                    "Motivo": cat.get("reason", "")
+                })
+            priority_df = pd.DataFrame(priority_rows)
+            priority_df_sorted = priority_df.sort_values("Score", ascending=False)
+            st.dataframe(priority_df_sorted, use_container_width=True, hide_index=True)
+        else:
+            st.info("Sin categorías prioritarias")
+
+        # Categorías más consultadas
+        st.markdown("---")
+        st.markdown("**Top 10 Categorías Más Consultadas**")
+        if most_consulted:
+            consulted_rows = []
+            for cat in most_consulted:
+                tasa = float(cat.get("tasaRespuesta", 0)) * 100
+                pct = float(cat.get("porcentajeDelTotal", 0)) * 100
+                consulted_rows.append({
+                    "Categoría": cat.get("categoria", ""),
+                    "Total": int(cat.get("total", 0)),
+                    "Respondidas": int(cat.get("answered", 0)),
+                    "No Respondidas": int(cat.get("notAnswered", 0)),
+                    "Tasa Respuesta": f"{tasa:.1f}%",
+                    "% del Total": f"{pct:.1f}%"
+                })
+            st.dataframe(consulted_rows, use_container_width=True, hide_index=True)
+        else:
+            st.info("Sin categorías consultadas")
+
+        # Mejores categorías
+        with st.expander("✅ Mejores Categorías (Mayor Tasa de Respuesta)"):
+            if best_categories:
+                best_rows = []
+                for cat in best_categories:
+                    tasa = float(cat.get("tasaRespuesta", 0)) * 100
+                    best_rows.append({
+                        "Categoría": cat.get("categoria", ""),
+                        "Total": int(cat.get("total", 0)),
+                        "Respondidas": int(cat.get("answered", 0)),
+                        "Tasa Respuesta": f"{tasa:.1f}%",
+                        "Pendientes": int(cat.get("pendientes", 0))
+                    })
+                st.dataframe(best_rows, use_container_width=True, hide_index=True)
+            else:
+                st.info("Sin categorías con buena tasa de respuesta")
+
+        # Peores categorías
+        with st.expander("❌ Peores Categorías (Menor Tasa de Respuesta)"):
+            if worst_categories:
+                worst_rows = []
+                for cat in worst_categories:
+                    tasa = float(cat.get("tasaRespuesta", 0)) * 100
+                    worst_rows.append({
+                        "Categoría": cat.get("categoria", ""),
+                        "Total": int(cat.get("total", 0)),
+                        "Respondidas": int(cat.get("answered", 0)),
+                        "No Respondidas": int(cat.get("notAnswered", 0)),
+                        "Tasa Respuesta": f"{tasa:.1f}%",
+                        "Pendientes": int(cat.get("pendientes", 0))
+                    })
+                st.dataframe(worst_rows, use_container_width=True, hide_index=True)
+            else:
+                st.info("Sin categorías con baja tasa de respuesta")
+
+        # Todas las categorías
+        with st.expander("📊 Todas las Categorías"):
+            if by_category:
+                all_category_rows = []
+                for cat in by_category:
+                    tasa = float(cat.get("tasaRespuesta", 0)) * 100
+                    pct = float(cat.get("porcentajeDelTotal", 0)) * 100
+                    all_category_rows.append({
+                        "Categoría": cat.get("categoria", ""),
+                        "Total": int(cat.get("total", 0)),
+                        "Respondidas": int(cat.get("answered", 0)),
+                        "No Respondidas": int(cat.get("notAnswered", 0)),
+                        "Flagged": int(cat.get("flagged", 0)),
+                        "Pendientes": int(cat.get("pendientes", 0)),
+                        "Tasa Respuesta": f"{tasa:.1f}%",
+                        "% del Total": f"{pct:.1f}%"
+                    })
+                all_df = pd.DataFrame(all_category_rows).sort_values("Total", ascending=False)
+                st.dataframe(all_df, use_container_width=True, hide_index=True)
+            else:
+                st.info("Sin datos de categorías")
 
 with testing_tab2:
     st.header("Regression Dataset")
