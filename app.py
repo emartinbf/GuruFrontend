@@ -3424,99 +3424,65 @@ with testing_tab_insights:
         else:
             st.info("Sin datos semanales disponibles")
 
-        # Categorías prioritarias
+        # Tabla fusionada: Prioridad + Top consultadas
         st.markdown("---")
-        st.markdown("**Categorías Prioritarias (Score de Impacto)**")
-        if priority_categories:
-            priority_rows = []
-            for cat in priority_categories:
-                priority_rows.append({
-                    "Categoría": cat.get("categoria", ""),
-                    "Score": round(float(cat.get("priorityScore", 0)), 2),
-                    "Motivo": cat.get("reason", "")
-                })
-            priority_df = pd.DataFrame(priority_rows)
-            priority_df_sorted = priority_df.sort_values("Score", ascending=False)
-            st.dataframe(priority_df_sorted, use_container_width=True, hide_index=True)
-        else:
-            st.info("Sin categorías prioritarias")
-
-        # Categorías más consultadas
-        st.markdown("---")
-        st.markdown("**Top 10 Categorías Más Consultadas**")
+        st.markdown("**Categorías Prioritarias (Score de Impacto) + Top 10 Más Consultadas**")
         if most_consulted:
-            consulted_rows = []
+            priority_by_category = {
+                (item.get("categoria") or ""): item
+                for item in (priority_categories or [])
+            }
+
+            merged_rows = []
             for cat in most_consulted:
-                tasa = float(cat.get("tasaRespuesta", 0)) * 100
-                pct = float(cat.get("porcentajeDelTotal", 0)) * 100
-                consulted_rows.append({
-                    "Categoría": cat.get("categoria", ""),
-                    "Total": int(cat.get("total", 0)),
-                    "Respondidas": int(cat.get("answered", 0)),
-                    "No Respondidas": int(cat.get("notAnswered", 0)),
-                    "Tasa Respuesta": f"{tasa:.1f}%",
-                    "% del Total": f"{pct:.1f}%"
-                })
-            st.dataframe(consulted_rows, use_container_width=True, hide_index=True)
+                categoria = cat.get("categoria", "")
+                total_categoria = int(cat.get("total", 0) or 0)
+                priority_match = priority_by_category.get(categoria, {})
+
+                feedback_negativo = int(cat.get("feedbackNegativo", cat.get("flagged", 0)) or 0)
+                sin_respuesta = int(cat.get("sinRespuesta", 0) or 0)
+                confianza_baja = int(cat.get("confianzaBaja", 0) or 0)
+                coincidencia = int(cat.get("coincidencia", cat.get("answered", 0)) or 0)
+
+                feedback_negativo_pct = (feedback_negativo / total_categoria * 100) if total_categoria > 0 else 0.0
+                sin_respuesta_pct = (sin_respuesta / total_categoria * 100) if total_categoria > 0 else 0.0
+                confianza_baja_pct = (confianza_baja / total_categoria * 100) if total_categoria > 0 else 0.0
+                coincidencia_pct = (coincidencia / total_categoria * 100) if total_categoria > 0 else 0.0
+
+                merged_rows.append(
+                    {
+                        "Categoría": categoria,
+                        "Total": total_categoria,
+                        "Respondidas": int(cat.get("answered", 0) or 0),
+                        "No Respondidas": int(cat.get("notAnswered", 0) or 0),
+                        "% del Total": f"{float(cat.get('porcentajeDelTotal', 0) or 0) * 100:.1f}%",
+                        "Score de Impacto": round(float(priority_match.get("priorityScore", 0) or 0), 2),
+                        "🔴 Feedback negativo": f"{feedback_negativo_pct:.1f}%",
+                        "🔴 Sin respuesta": f"{sin_respuesta_pct:.1f}%",
+                        "🟡 Confianza baja": f"{confianza_baja_pct:.1f}%",
+                        "🟢 Coincidencia": f"{coincidencia_pct:.1f}%",
+                        "_scoreMotivo": priority_match.get("reason", "Sin detalle"),
+                    }
+                )
+
+            merged_df = pd.DataFrame(merged_rows)
+            merged_df = merged_df.sort_values(["Total", "Score de Impacto"], ascending=[False, False])
+
+            display_df = merged_df.drop(columns=["_scoreMotivo"]).copy()
+
+            st.dataframe(
+                display_df,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Score de Impacto": st.column_config.NumberColumn(
+                        "Score de Impacto",
+                        help="(Sin Respuesta × 2.0 + Feedback Negativo × 1.5 + Pendientes × 1.2) × (1 + % del Total)\n\nMayor peso a categorías con más problemas y más volumen de consultas.",
+                    )
+                },
+            )
         else:
             st.info("Sin categorías consultadas")
-
-        # Mejores categorías
-        with st.expander("✅ Mejores Categorías (Mayor Tasa de Respuesta)"):
-            if best_categories:
-                best_rows = []
-                for cat in best_categories:
-                    tasa = float(cat.get("tasaRespuesta", 0)) * 100
-                    best_rows.append({
-                        "Categoría": cat.get("categoria", ""),
-                        "Total": int(cat.get("total", 0)),
-                        "Respondidas": int(cat.get("answered", 0)),
-                        "Tasa Respuesta": f"{tasa:.1f}%",
-                        "Pendientes": int(cat.get("pendientes", 0))
-                    })
-                st.dataframe(best_rows, use_container_width=True, hide_index=True)
-            else:
-                st.info("Sin categorías con buena tasa de respuesta")
-
-        # Peores categorías
-        with st.expander("❌ Peores Categorías (Menor Tasa de Respuesta)"):
-            if worst_categories:
-                worst_rows = []
-                for cat in worst_categories:
-                    tasa = float(cat.get("tasaRespuesta", 0)) * 100
-                    worst_rows.append({
-                        "Categoría": cat.get("categoria", ""),
-                        "Total": int(cat.get("total", 0)),
-                        "Respondidas": int(cat.get("answered", 0)),
-                        "No Respondidas": int(cat.get("notAnswered", 0)),
-                        "Tasa Respuesta": f"{tasa:.1f}%",
-                        "Pendientes": int(cat.get("pendientes", 0))
-                    })
-                st.dataframe(worst_rows, use_container_width=True, hide_index=True)
-            else:
-                st.info("Sin categorías con baja tasa de respuesta")
-
-        # Todas las categorías
-        with st.expander("📊 Todas las Categorías"):
-            if by_category:
-                all_category_rows = []
-                for cat in by_category:
-                    tasa = float(cat.get("tasaRespuesta", 0)) * 100
-                    pct = float(cat.get("porcentajeDelTotal", 0)) * 100
-                    all_category_rows.append({
-                        "Categoría": cat.get("categoria", ""),
-                        "Total": int(cat.get("total", 0)),
-                        "Respondidas": int(cat.get("answered", 0)),
-                        "No Respondidas": int(cat.get("notAnswered", 0)),
-                        "Flagged": int(cat.get("flagged", 0)),
-                        "Pendientes": int(cat.get("pendientes", 0)),
-                        "Tasa Respuesta": f"{tasa:.1f}%",
-                        "% del Total": f"{pct:.1f}%"
-                    })
-                all_df = pd.DataFrame(all_category_rows).sort_values("Total", ascending=False)
-                st.dataframe(all_df, use_container_width=True, hide_index=True)
-            else:
-                st.info("Sin datos de categorías")
 
 with testing_tab2:
     st.header("Regression Dataset")
