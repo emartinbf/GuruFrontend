@@ -1918,8 +1918,9 @@ with tab4:
     if "quality_batch_report" not in st.session_state:
         st.session_state.quality_batch_report = None
 
-    testing_tab1, testing_tab2, testing_tab3, testing_tab4, testing_tab5, testing_tab6 = st.tabs([
+    testing_tab1, testing_tab_insights, testing_tab2, testing_tab3, testing_tab4, testing_tab5, testing_tab6 = st.tabs([
         "📋 Cola de revisión",
+        "💡 Insights Analisis",
         "🧪 Regression Dataset",
         "🟨 Golden Dataset",
         "🔍 Detectar Duplicados",
@@ -2324,6 +2325,7 @@ with tab3:
                 dist_resp = api_request("GET", "/Metrics/distribution", params=params_range)
                 recent_resp = api_request("GET", "/Metrics/recent", params={"limit": int(ops_recent_limit)})
                 feedback_stats_resp = api_request("GET", "/quality/feedback/stats", params=params_range)
+                qa_insights_resp = api_request("GET", "/qa/insights", params=params_range)
 
             if summary_resp and summary_resp.status_code == 200:
                 st.session_state.ops_dashboard["summary"] = summary_resp.json()
@@ -2344,6 +2346,9 @@ with tab3:
                 st.session_state.ops_dashboard["feedback_stats"] = feedback_stats_resp.json()
             elif feedback_stats_resp:
                 render_error_response(feedback_stats_resp)
+
+            if qa_insights_resp and qa_insights_resp.status_code == 200:
+                st.session_state.ops_dashboard["qa_insights"] = qa_insights_resp.json()
 
             if recent_resp and recent_resp.status_code == 200:
                 recent_raw = recent_resp.json() or []
@@ -2584,6 +2589,60 @@ with tab3:
                     )
                 else:
                     st.info("Sin datos de distribución.")
+
+            ops_qa_insights = ops_payload.get("qa_insights") or {}
+            ops_most_consulted = ops_qa_insights.get("mostConsultedCategories", [])
+            ops_priority_categories = ops_qa_insights.get("priorityCategories", [])
+
+            st.markdown("---")
+            st.markdown("**Categorías Prioritarias (Score de Impacto)**")
+            if ops_most_consulted:
+                ops_priority_by_category = {
+                    (item.get("categoria") or ""): item
+                    for item in (ops_priority_categories or [])
+                }
+                ops_merged_rows = []
+                for cat in ops_most_consulted:
+                    categoria = cat.get("categoria", "")
+                    total_categoria = int(cat.get("total", 0) or 0)
+                    priority_match = ops_priority_by_category.get(categoria, {})
+                    feedback_negativo = int(cat.get("feedbackNegativo", cat.get("flagged", 0)) or 0)
+                    sin_respuesta = int(cat.get("sinRespuesta", 0) or 0)
+                    confianza_baja = int(cat.get("confianzaBaja", 0) or 0)
+                    coincidencia = int(cat.get("coincidencia", cat.get("answered", 0)) or 0)
+                    feedback_negativo_pct = (feedback_negativo / total_categoria * 100) if total_categoria > 0 else 0.0
+                    sin_respuesta_pct = (sin_respuesta / total_categoria * 100) if total_categoria > 0 else 0.0
+                    confianza_baja_pct = (confianza_baja / total_categoria * 100) if total_categoria > 0 else 0.0
+                    coincidencia_pct = (coincidencia / total_categoria * 100) if total_categoria > 0 else 0.0
+                    ops_merged_rows.append(
+                        {
+                            "Categoría": categoria,
+                            "Total": total_categoria,
+                            "Respondidas": int(cat.get("answered", 0) or 0),
+                            "No Respondidas": int(cat.get("notAnswered", 0) or 0),
+                            "% del Total": f"{float(cat.get('porcentajeDelTotal', 0) or 0) * 100:.1f}%",
+                            "Score de Impacto": round(float(priority_match.get("priorityScore", 0) or 0), 2),
+                            "🔴 Feedback negativo %": f"{feedback_negativo_pct:.1f}%",
+                            "🔴 Sin respuesta %": f"{sin_respuesta_pct:.1f}%",
+                            "🟡 Confianza baja %": f"{confianza_baja_pct:.1f}%",
+                            "🟢 Coincidencia %": f"{coincidencia_pct:.1f}%",
+                        }
+                    )
+                ops_display_df = pd.DataFrame(ops_merged_rows)
+                ops_display_df = ops_display_df.sort_values(["Total", "Score de Impacto"], ascending=[False, False])
+                st.dataframe(
+                    ops_display_df,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "Score de Impacto": st.column_config.NumberColumn(
+                            "Score de Impacto",
+                            help="(Sin Respuesta × 2.0 + Feedback Negativo × 1.5 + Pendientes × 1.2) × (1 + % del Total)\n\nMayor peso a categorías con más problemas y más volumen de consultas.",
+                        )
+                    },
+                )
+            else:
+                st.info("Sin categorías consultadas para el período seleccionado.")
 
             if ops_recent:
                 # st.markdown("---")
@@ -2908,28 +2967,15 @@ with tab3:
 
 with testing_tab1:
     st.subheader("Cola de revisión")
-    st.caption("Muestreo estratificado de ítems pendientes de revisión según segmentación de riesgo.")
-
-    # Tabla de segmentación
-    st.markdown("**Segmentación de Riesgo**")
-    segmentation_data = [
-        {"Segmento": "🔴 Alto", "Porcentaje": "60%", "Criterio": "Feedback negativo, Sin respuesta o Confianza < 0.70"},
-        {"Segmento": "🟡 Medio", "Porcentaje": "30%", "Criterio": "Baja Confianza >= 0.70"},
-        {"Segmento": "🟢 Bajo", "Porcentaje": "10%", "Criterio": "Coincidencia / Confianza alta"},
-    ]
-    st.dataframe(segmentation_data, use_container_width=True, hide_index=True)
-
-    st.markdown("---")
 
     # Input y botón de muestreo
-    st.markdown("**Generar Muestreo**")
     sample_col1, sample_col2 = st.columns([1, 1])
     with sample_col1:
         sample_count = st.number_input(
             "Cantidad de ítems a muestrear",
             min_value=1,
-            max_value=500,
-            value=20,
+            max_value=2000,
+            value=200,
             step=1,
             key="review_sample_count"
         )
@@ -2964,179 +3010,537 @@ with testing_tab1:
 
     # Mostrar cola
     review_items = st.session_state.get("review_queue", []) or []
-    
+
     if not review_items:
         st.info("Genera un muestreo para ver los ítems pendientes de revisión.")
     else:
-        # Catálogo de respuestas para resoluciones
-        respuestas_catalog = load_respuestas_catalog()
-        answer_map = {
-            f"{r.get('id')} [{r.get('answerKey') or 'Sin key'}]": r
-            for r in respuestas_catalog
-            if r.get("id")
-        }
+        filters_col, content_col = st.columns([1, 3], gap="large")
 
-        # Mostrar cada ítem
-        for idx, item in enumerate(review_items):
-            item_id = item.get("id")
-            query = item.get("originalQuery", item.get("query", "N/A"))
-            resultado = item.get("resultado", "N/A")
-            score = to_float(item.get("score", 0))
-            impact_level = item.get("impactLevel", "bajo").lower()
-            review_status = item.get("reviewStatus", "pendiente_revision")
-            ai_draft_status = item.get("aiDraftStatus", "")
-            ai_draft_answer = item.get("aiDraftAnswer", "")
-            ai_draft_source_file = item.get("aiDraftSourceFile", "")
-            ai_draft_source_page = item.get("aiDraftSourcePage", "")
-            has_feedback = to_bool(item.get("hasUserFeedback", False))
-            feedback_type = item.get("userFeedbackType", "")
-            feedback_comment = item.get("feedbackComment", "")
+        # Aplicar filtros en panel lateral para una UX más clara
+        with filters_col:
+            st.markdown("### Filtros")
+            st.markdown("**Filtrar por impacto**")
 
-            # Determinar color unificado: rojo si feedback neg o no_match, amarillo si below_threshold sin feedback neg, verde si match sin feedback neg
-            if has_feedback and feedback_type == "negative":
-                status_badge = "🔴"
-                status_label = "Feedback negativo"
-            elif resultado == "no_match":
-                status_badge = "🔴"
-                status_label = "Sin respuesta"
-            elif resultado == "below_threshold":
-                status_badge = "🟡"
-                status_label = "Confianza baja"
+            def classify_impact_filter(item):
+                item_resultado = (item.get("resultado") or "").strip().lower()
+                item_feedback_type = (item.get("userFeedbackType") or "").strip().lower()
+                item_has_feedback = to_bool(item.get("hasUserFeedback", False))
+
+                if item_has_feedback and item_feedback_type == "negative":
+                    return "feedback_negativo"
+                if item_resultado == "no_match":
+                    return "sin_respuesta"
+                if item_resultado == "below_threshold":
+                    return "confianza_baja"
+                return "coincidencia"
+
+            valid_impact_filters = {"feedback_negativo", "sin_respuesta", "confianza_baja", "coincidencia"}
+            impact_counts = {key: 0 for key in valid_impact_filters}
+            for item in review_items:
+                impact_key = classify_impact_filter(item)
+                impact_counts[impact_key] = impact_counts.get(impact_key, 0) + 1
+
+            if "review_impact_filter" not in st.session_state or not st.session_state.review_impact_filter:
+                st.session_state.review_impact_filter = valid_impact_filters.copy()
+            elif not set(st.session_state.review_impact_filter).issubset(valid_impact_filters):
+                st.session_state.review_impact_filter = valid_impact_filters.copy()
+
+            selected_impacts = set()
+            if st.checkbox(
+                f"🔴 Feedback negativo ({impact_counts.get('feedback_negativo', 0)})",
+                value="feedback_negativo" in st.session_state.review_impact_filter,
+                key="impact_feedback_negativo",
+                help="Consultas con feedback negativo del usuario",
+            ):
+                selected_impacts.add("feedback_negativo")
+            if st.checkbox(
+                f"🔴 Sin respuesta ({impact_counts.get('sin_respuesta', 0)})",
+                value="sin_respuesta" in st.session_state.review_impact_filter,
+                key="impact_sin_respuesta",
+                help="Consultas que terminaron sin respuesta",
+            ):
+                selected_impacts.add("sin_respuesta")
+            if st.checkbox(
+                f"🟡 Confianza baja ({impact_counts.get('confianza_baja', 0)})",
+                value="confianza_baja" in st.session_state.review_impact_filter,
+                key="impact_confianza_baja",
+                help="Consultas below_threshold",
+            ):
+                selected_impacts.add("confianza_baja")
+            if st.checkbox(
+                f"🟢 Coincidencia ({impact_counts.get('coincidencia', 0)})",
+                value="coincidencia" in st.session_state.review_impact_filter,
+                key="impact_coincidencia",
+                help="Consultas respondidas con coincidencia",
+            ):
+                selected_impacts.add("coincidencia")
+
+            st.session_state.review_impact_filter = selected_impacts if selected_impacts else valid_impact_filters.copy()
+
+            filtered_review_items = [
+                item
+                for item in review_items
+                if classify_impact_filter(item) in st.session_state.review_impact_filter
+            ]
+
+            st.markdown("**Filtrar por categoría**")
+            category_counts = {}
+            for item in filtered_review_items:
+                categoria = (item.get("categoria") or item.get("Categoria") or "Sin clasificar").strip() or "Sin clasificar"
+                category_counts[categoria] = category_counts.get(categoria, 0) + 1
+
+            sorted_categories = sorted(category_counts.items(), key=lambda item: (-item[1], item[0].lower()))
+            category_options = ["__all__"] + [category for category, _ in sorted_categories]
+            category_labels = {"__all__": f"Todos ({len(filtered_review_items)})"}
+            category_labels.update({category: f"{category} ({count})" for category, count in sorted_categories})
+
+            if "review_category_filter" not in st.session_state:
+                st.session_state.review_category_filter = "__all__"
+            elif st.session_state.review_category_filter not in category_options:
+                st.session_state.review_category_filter = "__all__"
+
+            if hasattr(st, "pills"):
+                selected_category = st.pills(
+                    "Seleccionar categoría",
+                    category_options,
+                    format_func=lambda option: category_labels.get(option, option),
+                    key="review_category_filter",
+                )
             else:
-                status_badge = "🟢"
-                status_label = "Coincidencia"
-
-            title = f"{status_badge} {status_label} | {query[:80]}"
-
-            with st.expander(title, expanded=False):
-                col1, col2 = st.columns([2, 1])
-                
-                with col1:
-                    st.write(f"**Consulta:** {query}")
-                    st.write(f"**Confianza:** {score:.3f} | **Estado:** {review_status}")
-                    st.write(f"**Resultado técnico:** {resultado}")
-                    
-                    # Mostrar respuesta proporcionada
-                    answer_key = item.get("answerKey", "")
-                    answer_text = item.get("answerText", "")
-                    if answer_key or answer_text:
-                        st.markdown("---")
-                        if answer_key:
-                            st.write(f"**Clave de Respuesta:** {answer_key}")
-                        if answer_text:
-                            st.write(f"**Respuesta proporcionada:** {answer_text}")
-                    
-                    if has_feedback:
-                        st.caption(f"💬 Comentario del usuario: {feedback_comment or '(sin comentario)'}")
-                    if ai_draft_status == "generada" and ai_draft_answer:
-                        st.info(f"💡 Borrador IA disponible: {ai_draft_answer[:200]}...")
-                        # Mostrar fuente del borrador IA si está disponible
-                        if ai_draft_source_file or ai_draft_source_page:
-                            fuente = f"**Fuente sugerencia IA:** "
-                            if ai_draft_source_file:
-                                fuente += f"Archivo: {ai_draft_source_file}"
-                            if ai_draft_source_page:
-                                fuente += f" | Página: {ai_draft_source_page}"
-                            st.caption(fuente)
-
-                with col2:
-                    feedback_label = "Sin feedback" if not has_feedback else ("👍 Positivo" if feedback_type == "positive" else "👎 Negativo")
-                    st.markdown(f'<p style="font-size:0.8rem;color:grey;margin-bottom:2px">Feedback</p><p style="font-size:1.25rem;font-weight:700;margin:0">{feedback_label}</p>', unsafe_allow_html=True)
-
-                # Panel de resolución
-                st.markdown("---")
-                st.markdown("**Resolver**")
-
-                # Radio button fuera del form para que rerune y muestre/oculte campos dinámicamente
-                accion = st.radio(
-                    "Acción",
-                    ["usar_existente", "crear_nueva", "descartar"],
-                    format_func=lambda x: {
-                        "usar_existente": "Usar respuesta existente",
-                        "crear_nueva": "Crear nueva respuesta",
-                        "descartar": "Descartar (no amerita KB)"
-                    }[x],
-                    horizontal=True,
-                    key=f"review_accion_{idx}"
+                selected_category = st.radio(
+                    "Seleccionar categoría",
+                    category_options,
+                    format_func=lambda option: category_labels.get(option, option),
+                    key="review_category_filter",
                 )
 
-                # Campos según la acción (fuera del form para que se actualicen dinámicamente)
-                pregunta_texto = st.text_input(
-                    "Texto de pregunta (opcional)",
-                    value=query,
-                    key=f"review_pregunta_{idx}",
-                    help="Si no se completa, se usa la query original"
-                )
+            selected_category = selected_category or "__all__"
 
-                respuesta_id_existente = None
-                nueva_respuesta_texto = ""
-                nueva_respuesta_key = ""
+            filtered_review_items = [
+                item
+                for item in filtered_review_items
+                if selected_category == "__all__"
+                or (item.get("categoria") or item.get("Categoria") or "Sin clasificar").strip() == selected_category
+            ]
 
-                if accion == "usar_existente":
-                    selected_respuesta = st.selectbox(
-                        "Seleccionar respuesta existente",
-                        [""] + list(answer_map.keys()),
-                        key=f"review_respuesta_select_{idx}"
+        with content_col:
+            st.caption(f"Mostrando {len(filtered_review_items)} de {len(review_items)} ítems")
+
+            # Catálogo de respuestas para resoluciones
+            respuestas_catalog = load_respuestas_catalog()
+            answer_map = {
+                f"{r.get('id')} [{r.get('answerKey') or 'Sin key'}]": r
+                for r in respuestas_catalog
+                if r.get("id")
+            }
+
+            # Mostrar cada ítem
+            for idx, item in enumerate(filtered_review_items):
+                item_id = item.get("id")
+                query = item.get("originalQuery", item.get("query", "N/A"))
+                resultado = item.get("resultado", "N/A")
+                score = to_float(item.get("score", 0))
+                impact_level = item.get("impactLevel", "bajo").lower()
+                review_status = item.get("reviewStatus", "pendiente_revision")
+                ai_draft_status = item.get("aiDraftStatus", "")
+                ai_draft_answer = item.get("aiDraftAnswer", "")
+                ai_draft_source_file = item.get("aiDraftSourceFile", "")
+                ai_draft_source_page = item.get("aiDraftSourcePage", "")
+                has_feedback = to_bool(item.get("hasUserFeedback", False))
+                feedback_type = item.get("userFeedbackType", "")
+                feedback_comment = item.get("feedbackComment", "")
+                similar_questions = item.get("similarQuestions", []) or []
+
+                # Determinar color unificado: rojo si feedback neg o no_match, amarillo si below_threshold sin feedback neg, verde si match sin feedback neg
+                if has_feedback and feedback_type == "negative":
+                    status_badge = "🔴"
+                    status_label = "Feedback negativo"
+                elif resultado == "no_match":
+                    status_badge = "🔴"
+                    status_label = "Sin respuesta"
+                elif resultado == "below_threshold":
+                    status_badge = "🟡"
+                    status_label = "Confianza baja"
+                else:
+                    status_badge = "🟢"
+                    status_label = "Coincidencia"
+
+                title = f"{status_badge} {status_label} | {query[:80]}"
+
+                with st.expander(title, expanded=False):
+                    col1, col2 = st.columns([2, 1])
+
+                    with col1:
+                        st.write(f"**Consulta:** {query}")
+                        st.write(f"**Confianza:** {score:.3f} | **Estado:** {review_status}")
+                        st.write(f"**Resultado técnico:** {resultado}")
+
+                        # Mostrar respuesta proporcionada
+                        answer_key = item.get("answerKey", "")
+                        answer_text = item.get("answerText", "")
+                        if answer_key or answer_text:
+                            st.markdown("---")
+                            if answer_key:
+                                st.write(f"**Clave de Respuesta:** {answer_key}")
+                            if answer_text:
+                                st.write(f"**Respuesta proporcionada:** {answer_text}")
+
+                        if has_feedback:
+                            st.caption(f"💬 Comentario del usuario: {feedback_comment or '(sin comentario)'}")
+                        if ai_draft_status == "generada" and ai_draft_answer:
+                            st.info(f"💡 Borrador IA disponible: {ai_draft_answer[:200]}...")
+                            # Mostrar fuente del borrador IA si está disponible
+                            if ai_draft_source_file or ai_draft_source_page:
+                                fuente = f"**Fuente sugerencia IA:** "
+                                if ai_draft_source_file:
+                                    fuente += f"Archivo: {ai_draft_source_file}"
+                                if ai_draft_source_page:
+                                    fuente += f" | Página: {ai_draft_source_page}"
+                                st.caption(fuente)
+
+                    with col2:
+                        feedback_label = "Sin feedback" if not has_feedback else ("👍 Positivo" if feedback_type == "positive" else "👎 Negativo")
+                        st.markdown(f'<p style="font-size:0.8rem;color:grey;margin-bottom:2px">Feedback</p><p style="font-size:1.25rem;font-weight:700;margin:0">{feedback_label}</p>', unsafe_allow_html=True)
+
+                    # Panel de resolución
+                    st.markdown("---")
+                    st.markdown("**Resolver**")
+
+                    # Radio button fuera del form para que rerune y muestre/oculte campos dinámicamente
+                    accion = st.radio(
+                        "Acción",
+                        ["usar_existente", "crear_nueva", "descartar"],
+                        format_func=lambda x: {
+                            "usar_existente": "Usar respuesta existente",
+                            "crear_nueva": "Crear nueva respuesta",
+                            "descartar": "Descartar (no amerita KB)"
+                        }[x],
+                        horizontal=True,
+                        key=f"review_accion_{item_id}"
                     )
-                    if selected_respuesta:
-                        respuesta_id_existente = answer_map[selected_respuesta].get("id")
 
-                elif accion == "crear_nueva":
-                    nueva_respuesta_texto = st.text_area(
-                        "Texto de nueva respuesta",
-                        value=ai_draft_answer,
-                        height=120,
-                        key=f"review_nueva_respuesta_{idx}",
-                        placeholder="Escribir la nueva respuesta..."
-                    )
-                    nueva_respuesta_key = st.text_input(
-                        "CLAVE_DE_RESPUESTA (opcional)",
-                        key=f"review_nueva_key_{idx}",
-                        placeholder="EJ: SALDO_CONSULTA"
+                    # Campos según la acción (fuera del form para que se actualicen dinámicamente)
+                    pregunta_texto = st.text_input(
+                        "Texto de pregunta (opcional)",
+                        value=query,
+                        key=f"review_pregunta_{item_id}",
+                        help="Si no se completa, se usa la query original"
                     )
 
-                agregar_regression = st.checkbox(
-                    "Agregar al dataset de regresión",
-                    value=True,
-                    key=f"review_regression_{idx}"
-                )
+                    respuesta_id_existente = None
+                    nueva_respuesta_texto = ""
+                    nueva_respuesta_key = ""
 
-                if st.button("Guardar resolución", type="primary", key=f"review_guardar_{idx}"):
-                    # Validar
-                    if accion == "usar_existente" and not respuesta_id_existente:
-                        st.error("Selecciona una respuesta existente")
-                    elif accion == "crear_nueva" and not nueva_respuesta_texto.strip():
-                        st.error("Completa el texto de la nueva respuesta")
+                    if accion == "usar_existente":
+                        selected_respuesta = st.selectbox(
+                            "Seleccionar respuesta existente",
+                            [""] + list(answer_map.keys()),
+                            key=f"review_respuesta_select_{item_id}"
+                        )
+                        if selected_respuesta:
+                            respuesta_id_existente = answer_map[selected_respuesta].get("id")
+
+                    elif accion == "crear_nueva":
+                        nueva_respuesta_texto = st.text_area(
+                            "Texto de nueva respuesta",
+                            value=ai_draft_answer,
+                            height=120,
+                            key=f"review_nueva_respuesta_{item_id}",
+                            placeholder="Escribir la nueva respuesta..."
+                        )
+                        nueva_respuesta_key = st.text_input(
+                            "CLAVE_DE_RESPUESTA (opcional)",
+                            key=f"review_nueva_key_{item_id}",
+                            placeholder="EJ: SALDO_CONSULTA"
+                        )
+
+                    selected_similar_ids = []
+                    st.markdown("---")
+                    st.markdown("**Preguntas relacionadas**")
+
+                    if similar_questions:
+                        st.markdown(
+                            """
+                            <style>
+                            div[data-testid="stDataEditor"] input[type="checkbox"] {
+                                accent-color: #dc2626 !important;
+                            }
+                            </style>
+                            """,
+                            unsafe_allow_html=True,
+                        )
+
+                        similar_rows = []
+                        for similar in similar_questions:
+                            similar_rows.append(
+                                {
+                                    "queryHistoryId": similar.get("queryHistoryId"),
+                                    "Aplicar": to_bool(similar.get("selectedByDefault", True)),
+                                    "Pregunta": similar.get("queryText", ""),
+                                    "Similitud": round(to_float(similar.get("similarityScore", 0)) * 100, 1),
+                                }
+                            )
+
+                        similar_df = pd.DataFrame(similar_rows)
+                        edited_similar_df = st.data_editor(
+                            similar_df,
+                            key=f"review_similar_table_{item_id}",
+                            hide_index=True,
+                            use_container_width=True,
+                            disabled=["queryHistoryId", "Pregunta", "Similitud"],
+                            column_config={
+                                "queryHistoryId": None,
+                                "Aplicar": st.column_config.CheckboxColumn("Aplicar"),
+                                "Pregunta": st.column_config.TextColumn("Pregunta"),
+                                "Similitud": st.column_config.NumberColumn("Similitud", format="%.1f %%"),
+                            },
+                        )
+
+                        selected_similar_ids = (
+                            edited_similar_df.loc[edited_similar_df["Aplicar"] == True, "queryHistoryId"]
+                            .dropna()
+                            .astype(str)
+                            .tolist()
+                        )
+
+                        st.caption(f"Relacionadas detectadas: {len(similar_questions)} | Seleccionadas: {len(selected_similar_ids)}")
                     else:
-                        # Construir payload
-                        payload = {
-                            "accion": accion,
-                            "resueltoPor": st.session_state.get("auth_user", "streamlit-qa"),
-                            "preguntaTexto": pregunta_texto.strip() if pregunta_texto.strip() else None,
-                            "agregarAlRegressionDataset": agregar_regression and accion != "descartar",
-                        }
+                        st.info("No se detectaron preguntas relacionadas para este ítem en el muestreo actual.")
 
-                        if accion == "usar_existente":
-                            payload["respuestaIdExistente"] = respuesta_id_existente
-                        elif accion == "crear_nueva":
-                            payload["nuevaRespuestaTexto"] = nueva_respuesta_texto.strip()
-                            payload["nuevaRespuestaAnswerKey"] = (nueva_respuesta_key.strip().upper() if nueva_respuesta_key.strip() else None)
-                        elif accion == "descartar":
-                            payload["observaciones"] = "ok"
+                    agregar_regression = st.checkbox(
+                        "Agregar al dataset de regresión",
+                        value=True,
+                        key=f"review_regression_{item_id}"
+                    )
 
-                        # Enviar
-                        with st.spinner("Guardando resolución..."):
-                            response = api_request("POST", f"/qa/review-queue/{item_id}/resolve", json=payload)
+                    if st.button("Guardar resolución", type="primary", key=f"review_guardar_{item_id}"):
+                        # Validar
+                        if accion == "usar_existente" and not respuesta_id_existente:
+                            st.error("Selecciona una respuesta existente")
+                        elif accion == "crear_nueva" and not nueva_respuesta_texto.strip():
+                            st.error("Completa el texto de la nueva respuesta")
+                        else:
+                            # Construir payload
+                            payload = {
+                                "accion": accion,
+                                "resueltoPor": st.session_state.get("auth_user", "streamlit-qa"),
+                                "preguntaTexto": pregunta_texto.strip() if pregunta_texto.strip() else None,
+                                "agregarAlRegressionDataset": agregar_regression and accion != "descartar",
+                                "applyToSelectedSimilar": True,
+                                "selectedSimilarQueryHistoryIds": selected_similar_ids,
+                            }
 
-                        if response and response.status_code in (200, 201):
-                            # Eliminar del listado
-                            updated_queue = [item for item in st.session_state.review_queue if item.get("id") != item_id]
-                            st.session_state.review_queue = updated_queue
-                            st.success("✅ Resolución guardada correctamente")
-                            st.rerun()
-                        elif response:
-                            st.error("❌ Error al guardar la resolución")
-                            render_error_response(response)
+                            if accion == "usar_existente":
+                                payload["respuestaIdExistente"] = respuesta_id_existente
+                            elif accion == "crear_nueva":
+                                payload["nuevaRespuestaTexto"] = nueva_respuesta_texto.strip()
+                                payload["nuevaRespuestaAnswerKey"] = (nueva_respuesta_key.strip().upper() if nueva_respuesta_key.strip() else None)
+                            elif accion == "descartar":
+                                payload["observaciones"] = "ok"
+
+                            # Enviar
+                            with st.spinner("Guardando resolución..."):
+                                response = api_request("POST", f"/qa/review-queue/{item_id}/resolve", json=payload)
+
+                            if response and response.status_code in (200, 201):
+                                # Eliminar del listado el item principal y los relacionados seleccionados
+                                resolved_ids = {str(item_id)}
+                                resolved_ids.update(str(sim_id) for sim_id in selected_similar_ids if sim_id)
+
+                                updated_queue = [
+                                    item for item in st.session_state.review_queue
+                                    if str(item.get("id")) not in resolved_ids
+                                ]
+                                st.session_state.review_queue = updated_queue
+                                st.success("✅ Resolución guardada correctamente")
+                                st.rerun()
+                            elif response:
+                                st.error("❌ Error al guardar la resolución")
+                                render_error_response(response)
+
+with testing_tab_insights:
+    st.caption("Análisis consolidado de consultas, tasas de respuesta y recomendaciones de mejora generadas por IA")
+
+    if "qa_insights_data" not in st.session_state:
+        st.session_state.qa_insights_data = None
+    if "qa_insights_loading" not in st.session_state:
+        st.session_state.qa_insights_loading = False
+
+    # Selector de rango de fechas
+    insights_col1, insights_col2, insights_col3 = st.columns([2, 2, 1])
+    with insights_col1:
+        insights_from = st.date_input(
+            "Desde",
+            value=datetime.now().date() - timedelta(days=30),
+            key="insights_from"
+        )
+    with insights_col2:
+        insights_to = st.date_input(
+            "Hasta",
+            value=datetime.now().date(),
+            key="insights_to"
+        )
+    with insights_col3:
+        st.write("")
+        load_insights = st.button("Generar Análisis", type="primary", key="btn_load_insights")
+
+    if load_insights:
+        from_dt = datetime.combine(insights_from, time.min).isoformat()
+        to_dt = datetime.combine(insights_to, time.max).isoformat()
+        params = {"from": from_dt, "to": to_dt}
+
+        with st.spinner("Cargando insights QA..."):
+            response = api_request("GET", "/qa/insights", params=params)
+
+        if response and response.status_code == 200:
+            st.session_state.qa_insights_data = response.json()
+            st.success("✅ Insights cargados correctamente")
+        elif response:
+            st.error("Error al cargar insights")
+            render_error_response(response)
+
+    insights_data = st.session_state.get("qa_insights_data")
+    
+    if not insights_data:
+        st.info("Selecciona un rango de fechas y presiona 'Cargar Insights' para ver el análisis.")
+    else:
+        # Extraer datos
+        period = insights_data.get("period", {})
+        kpis = insights_data.get("kpis", {})
+        by_week = insights_data.get("byWeek", [])
+        by_category = insights_data.get("byCategory", [])
+        most_consulted = insights_data.get("mostConsultedCategories", [])
+        best_categories = insights_data.get("bestCategories", [])
+        worst_categories = insights_data.get("worstCategories", [])
+        priority_categories = insights_data.get("priorityCategories", [])
+        llm_report = insights_data.get("llmReport", {})
+
+        # KPIs principales
+        st.markdown("---")
+        st.markdown("**KPIs Principales**")
+        k1, k2, k3, k4, k5, k6 = st.columns(6)
+        
+        with k1:
+            st.metric("Total Consultas", int(kpis.get("totalConsultas", 0)))
+        with k2:
+            st.metric("Respondidas", int(kpis.get("answered", 0)))
+        with k3:
+            st.metric("No Respondidas", int(kpis.get("notAnswered", 0)))
+        with k4:
+            st.metric("Flagged", int(kpis.get("flagged", 0)))
+        with k5:
+            st.metric("Pendientes Revisión", int(kpis.get("pendientesRevision", 0)))
+        with k6:
+            tasa_resp = float(kpis.get("tasaRespuesta", 0)) * 100
+            st.metric("Tasa Respuesta", f"{tasa_resp:.1f}%")
+
+        # Reporte LLM
+        st.markdown("---")
+        st.markdown("**Resumen Ejecutivo (Generado por IA)**")
+        
+        if llm_report.get("executiveSummary"):
+            st.info(llm_report.get("executiveSummary", ""))
+        
+        if llm_report.get("keyFindings"):
+            st.markdown("**Hallazgos Clave:**")
+            for finding in llm_report.get("keyFindings", []):
+                st.write(f"• {finding}")
+        
+        if llm_report.get("recommendedActions"):
+            st.markdown("**Acciones Recomendadas:**")
+            for action in llm_report.get("recommendedActions", []):
+                st.write(f"• {action}")
+
+        # Orden de prioridades del LLM
+        if llm_report.get("priorityOrder"):
+            st.markdown("**Prioridades de Trabajo (según IA):**")
+            priority_rows = []
+            for idx, item in enumerate(llm_report.get("priorityOrder", []), 1):
+                priority_rows.append({
+                    "Orden": idx,
+                    "Categoría": item.get("categoria", ""),
+                    "Motivo": item.get("motivo", ""),
+                    "Beneficio Esperado": item.get("beneficioEsperado", "")
+                })
+            if priority_rows:
+                st.dataframe(priority_rows, use_container_width=True, hide_index=True)
+
+        # Desglose semanal
+        st.markdown("---")
+        st.markdown("**Desglose Semanal**")
+        if by_week:
+            weekly_rows = []
+            for week in by_week:
+                weekly_rows.append({
+                    "Semana": week.get("semana", ""),
+                    "Respondidas": int(week.get("answered", 0)),
+                    "No Respondidas": int(week.get("notAnswered", 0)),
+                    "Flagged": int(week.get("flagged", 0)),
+                    "Total": int(week.get("total", 0))
+                })
+            st.dataframe(weekly_rows, use_container_width=True, hide_index=True)
+        else:
+            st.info("Sin datos semanales disponibles")
+
+        # Tabla fusionada: Prioridad + Top consultadas
+        st.markdown("---")
+        st.markdown("**Categorías Prioritarias (Score de Impacto)**")
+        if most_consulted:
+            priority_by_category = {
+                (item.get("categoria") or ""): item
+                for item in (priority_categories or [])
+            }
+
+            merged_rows = []
+            for cat in most_consulted:
+                categoria = cat.get("categoria", "")
+                total_categoria = int(cat.get("total", 0) or 0)
+                priority_match = priority_by_category.get(categoria, {})
+
+                feedback_negativo = int(cat.get("feedbackNegativo", cat.get("flagged", 0)) or 0)
+                sin_respuesta = int(cat.get("sinRespuesta", 0) or 0)
+                confianza_baja = int(cat.get("confianzaBaja", 0) or 0)
+                coincidencia = int(cat.get("coincidencia", cat.get("answered", 0)) or 0)
+
+                feedback_negativo_pct = (feedback_negativo / total_categoria * 100) if total_categoria > 0 else 0.0
+                sin_respuesta_pct = (sin_respuesta / total_categoria * 100) if total_categoria > 0 else 0.0
+                confianza_baja_pct = (confianza_baja / total_categoria * 100) if total_categoria > 0 else 0.0
+                coincidencia_pct = (coincidencia / total_categoria * 100) if total_categoria > 0 else 0.0
+
+                merged_rows.append(
+                    {
+                        "Categoría": categoria,
+                        "Total": total_categoria,
+                        "Respondidas": int(cat.get("answered", 0) or 0),
+                        "No Respondidas": int(cat.get("notAnswered", 0) or 0),
+                        "% del Total": f"{float(cat.get('porcentajeDelTotal', 0) or 0) * 100:.1f}%",
+                        "Score de Impacto": round(float(priority_match.get("priorityScore", 0) or 0), 2),
+                        "🔴 Feedback negativo": f"{feedback_negativo_pct:.1f}%",
+                        "🔴 Sin respuesta": f"{sin_respuesta_pct:.1f}%",
+                        "🟡 Confianza baja": f"{confianza_baja_pct:.1f}%",
+                        "🟢 Coincidencia": f"{coincidencia_pct:.1f}%",
+                        "_scoreMotivo": priority_match.get("reason", "Sin detalle"),
+                    }
+                )
+
+            merged_df = pd.DataFrame(merged_rows)
+            merged_df = merged_df.sort_values(["Total", "Score de Impacto"], ascending=[False, False])
+
+            display_df = merged_df.drop(columns=["_scoreMotivo"]).copy()
+
+            st.dataframe(
+                display_df,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Score de Impacto": st.column_config.NumberColumn(
+                        "Score de Impacto",
+                        help="(Sin Respuesta × 2.0 + Feedback Negativo × 1.5 + Pendientes × 1.2) × (1 + % del Total)\n\nMayor peso a categorías con más problemas y más volumen de consultas.",
+                    )
+                },
+            )
+        else:
+            st.info("Sin categorías consultadas")
 
 with testing_tab2:
     st.header("Regression Dataset")
