@@ -2325,6 +2325,7 @@ with tab3:
                 dist_resp = api_request("GET", "/Metrics/distribution", params=params_range)
                 recent_resp = api_request("GET", "/Metrics/recent", params={"limit": int(ops_recent_limit)})
                 feedback_stats_resp = api_request("GET", "/quality/feedback/stats", params=params_range)
+                qa_insights_resp = api_request("GET", "/qa/insights", params=params_range)
 
             if summary_resp and summary_resp.status_code == 200:
                 st.session_state.ops_dashboard["summary"] = summary_resp.json()
@@ -2345,6 +2346,9 @@ with tab3:
                 st.session_state.ops_dashboard["feedback_stats"] = feedback_stats_resp.json()
             elif feedback_stats_resp:
                 render_error_response(feedback_stats_resp)
+
+            if qa_insights_resp and qa_insights_resp.status_code == 200:
+                st.session_state.ops_dashboard["qa_insights"] = qa_insights_resp.json()
 
             if recent_resp and recent_resp.status_code == 200:
                 recent_raw = recent_resp.json() or []
@@ -2585,6 +2589,60 @@ with tab3:
                     )
                 else:
                     st.info("Sin datos de distribución.")
+
+            ops_qa_insights = ops_payload.get("qa_insights") or {}
+            ops_most_consulted = ops_qa_insights.get("mostConsultedCategories", [])
+            ops_priority_categories = ops_qa_insights.get("priorityCategories", [])
+
+            st.markdown("---")
+            st.markdown("**Categorías Prioritarias (Score de Impacto)**")
+            if ops_most_consulted:
+                ops_priority_by_category = {
+                    (item.get("categoria") or ""): item
+                    for item in (ops_priority_categories or [])
+                }
+                ops_merged_rows = []
+                for cat in ops_most_consulted:
+                    categoria = cat.get("categoria", "")
+                    total_categoria = int(cat.get("total", 0) or 0)
+                    priority_match = ops_priority_by_category.get(categoria, {})
+                    feedback_negativo = int(cat.get("feedbackNegativo", cat.get("flagged", 0)) or 0)
+                    sin_respuesta = int(cat.get("sinRespuesta", 0) or 0)
+                    confianza_baja = int(cat.get("confianzaBaja", 0) or 0)
+                    coincidencia = int(cat.get("coincidencia", cat.get("answered", 0)) or 0)
+                    feedback_negativo_pct = (feedback_negativo / total_categoria * 100) if total_categoria > 0 else 0.0
+                    sin_respuesta_pct = (sin_respuesta / total_categoria * 100) if total_categoria > 0 else 0.0
+                    confianza_baja_pct = (confianza_baja / total_categoria * 100) if total_categoria > 0 else 0.0
+                    coincidencia_pct = (coincidencia / total_categoria * 100) if total_categoria > 0 else 0.0
+                    ops_merged_rows.append(
+                        {
+                            "Categoría": categoria,
+                            "Total": total_categoria,
+                            "Respondidas": int(cat.get("answered", 0) or 0),
+                            "No Respondidas": int(cat.get("notAnswered", 0) or 0),
+                            "% del Total": f"{float(cat.get('porcentajeDelTotal', 0) or 0) * 100:.1f}%",
+                            "Score de Impacto": round(float(priority_match.get("priorityScore", 0) or 0), 2),
+                            "🔴 Feedback negativo %": f"{feedback_negativo_pct:.1f}%",
+                            "🔴 Sin respuesta %": f"{sin_respuesta_pct:.1f}%",
+                            "🟡 Confianza baja %": f"{confianza_baja_pct:.1f}%",
+                            "🟢 Coincidencia %": f"{coincidencia_pct:.1f}%",
+                        }
+                    )
+                ops_display_df = pd.DataFrame(ops_merged_rows)
+                ops_display_df = ops_display_df.sort_values(["Total", "Score de Impacto"], ascending=[False, False])
+                st.dataframe(
+                    ops_display_df,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "Score de Impacto": st.column_config.NumberColumn(
+                            "Score de Impacto",
+                            help="(Sin Respuesta × 2.0 + Feedback Negativo × 1.5 + Pendientes × 1.2) × (1 + % del Total)\n\nMayor peso a categorías con más problemas y más volumen de consultas.",
+                        )
+                    },
+                )
+            else:
+                st.info("Sin categorías consultadas para el período seleccionado.")
 
             if ops_recent:
                 # st.markdown("---")
@@ -3426,7 +3484,7 @@ with testing_tab_insights:
 
         # Tabla fusionada: Prioridad + Top consultadas
         st.markdown("---")
-        st.markdown("**Categorías Prioritarias (Score de Impacto) + Top 10 Más Consultadas**")
+        st.markdown("**Categorías Prioritarias (Score de Impacto)**")
         if most_consulted:
             priority_by_category = {
                 (item.get("categoria") or ""): item
